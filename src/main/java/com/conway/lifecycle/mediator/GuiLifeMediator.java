@@ -85,14 +85,12 @@ public class GuiLifeMediator implements GuiLifeMediatorInf {
 	}
 
 	/**
-	 * Update container value by input x, y coordinates. 
+	 * Update container with new matrix. 
 	 * 
-	 * @param row
-	 * @param col
-	 * @param value
+	 * @param matrix
 	 */
-	public void updateContainer(int row, int col, Boolean value) {
-		container.setCellState(row, col, value);
+	public void updateContainer(Boolean[][] matrix) {
+		container.setMatrix(matrix);
 	}
 
 	/**

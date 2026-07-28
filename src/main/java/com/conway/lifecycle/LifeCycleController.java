@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import com.conway.lifecycle.mediator.GuiLifeMediatorInf;
 import com.conway.pair.CellCoordPair;
+import static com.conway.util.GuiLifeUtils.makeMatrixCopy;
 
 /**
  * @author Yurii Moroz.
@@ -119,26 +120,28 @@ public class LifeCycleController implements Runnable {
 	private void runNextGenerationLogic() {
 
 		Boolean[][] matrix = mediator.getMatrixCopy();
-		int startFromBoardPart = 0;
 		for (int i = 0; i < threadsCount; i++) {
 
 			int boardSize = (i == threadsCount - 1) ? boardLastPartSize
 					: boardPartSize;
 			int startPosition = (i == threadsCount - 1) ? -1
-					* boardLastPartSize : startFromBoardPart;
+					* boardLastPartSize : i * boardPartSize;
 
 			pool.submit(new CellStateGenerator(gridSize, boardSize,
 					startPosition, matrix));
-			startFromBoardPart = startFromBoardPart + boardPartSize;
 		}
 
-		resultList.clear();
+		Boolean[][] nextMatrix = new Boolean[gridSize][gridSize];
+		makeMatrixCopy(matrix, nextMatrix);
+
 		for (int i = 0; i < threadsCount; i++) {
 			try {
 				ArrayList<CellCoordPair<Integer, Integer>> futureGet = pool
 						.take().get();
 				if (futureGet != null && !futureGet.isEmpty()) {
-					resultList.addAll(futureGet);
+						for (CellCoordPair<Integer, Integer> pair : futureGet) {
+							nextMatrix[pair.getLeft()][pair.getRight()] = pair.isAlive() ? Boolean.TRUE : Boolean.FALSE;
+						}
 				}
 			} catch (InterruptedException e) {
 				LOGGER.error("InterruptedException happened.");
@@ -149,10 +152,7 @@ public class LifeCycleController implements Runnable {
 			}
 		}
 
-		for (CellCoordPair<Integer, Integer> pair : resultList) {
-			mediator.updateContainer(
-					pair.getLeft(), pair.getRight(), pair.isAlive());
-		}
+		mediator.updateContainer(nextMatrix);
 	}
 
 	/**

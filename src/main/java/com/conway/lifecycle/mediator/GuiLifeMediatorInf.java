@@ -18,14 +18,12 @@ public interface GuiLifeMediatorInf {
 	public void setThreadsCount(int threadsCount);
 	
 	/**
-	 * Update container value by input x, y coordinates. 
+	 * Update container with new matrix.
 	 * 
-	 * @param row
-	 * @param col
-	 * @param value
+	 * @param matrix
 	 */
-	public void updateContainer(int row, int col, Boolean value);
-	
+	public void updateContainer(Boolean[][] matrix);
+
 	/**
 	 * Return matrix copy.
 	 * 

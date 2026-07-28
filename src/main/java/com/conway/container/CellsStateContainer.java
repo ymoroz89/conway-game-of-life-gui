@@ -9,7 +9,7 @@ import static com.conway.util.GuiLifeUtils.*;
 public class CellsStateContainer implements CellsStateMatrixContainerInf {
 
 	/** The matrix structure contains values.  */
-	private Boolean[][] matrix;
+	private volatile Boolean[][] matrix;
 
 	/**
 	 * Class constructor.
@@ -25,10 +25,21 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * 
 	 * @return matrix copy.
 	 */
-	public synchronized Boolean[][] getMatrixCopy() {
-		Boolean[][] matrixCopy = new Boolean[matrix.length][matrix.length];
-		makeMatrixCopy(matrix, matrixCopy);
+	public Boolean[][] getMatrixCopy() {
+		Boolean[][] currentMatrix = matrix;
+		Boolean[][] matrixCopy = new Boolean[currentMatrix.length][currentMatrix.length];
+		makeMatrixCopy(currentMatrix, matrixCopy);
 		return matrixCopy;
+	}
+
+	@Override
+	public void setMatrix(Boolean[][] matrix) {
+		this.matrix = matrix;
+	}
+
+	@Override
+	public Boolean[][] getMatrix() {
+		return matrix;
 	}
 	
 	/**
@@ -40,7 +51,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * @param col
 	 * @return state of cell
 	 */
-	public synchronized Boolean getCellState(int row, int col) {
+	public Boolean getCellState(int row, int col) {
 		return matrix[row][col];
 	}
 	
@@ -53,7 +64,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * @param col
 	 * @param state
 	 */
-	public synchronized void setCellState(int row, int col, Boolean state) {
+	public void setCellState(int row, int col, Boolean state) {
 		matrix[row][col] = state;
 	}
 	
@@ -69,7 +80,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	/**
 	 * Clear container.
 	 */
-	public synchronized void clearContainer() {
+	public void clearContainer() {
 		clearMatrix(matrix);
 	}
 	

@@ -7,6 +7,20 @@ package com.conway.container;
 public interface CellsStateMatrixContainerInf {
 
 	/**
+	 * Set matrix.
+	 * 
+	 * @param matrix
+	 */
+	public void setMatrix(Boolean[][] matrix);
+
+	/**
+	 * Return matrix.
+	 * 
+	 * @return matrix.
+	 */
+	public Boolean[][] getMatrix();
+
+	/**
 	 * Return matrix copy.
 	 * 
 	 * @return matrix copy.

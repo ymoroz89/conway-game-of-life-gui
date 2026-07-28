@@ -106,10 +106,11 @@ public class MatrixBoard extends JPanel {
 	@Override
 	public void paintComponent(Graphics g) {
 		super.paintComponent(g);
+		Boolean[][] currentMatrix = container.getMatrix();
 		Graphics graphics = getMosaicBufImage().getGraphics();
 		for (int r = 0; r < rows; r++) {
 			for (int c = 0; c < columns; c++) {
-				drawSquare(graphics, r, c, false);
+				drawSquare(graphics, r, c, currentMatrix, false);
 			}
 		}
 		graphics.dispose();
@@ -132,9 +133,10 @@ public class MatrixBoard extends JPanel {
 	 * @param g
 	 * @param row
 	 * @param col
+	 * @param matrix
 	 * @param callRepaint
 	 */
-	private void drawSquare(Graphics g, int row, int col, boolean callRepaint) {
+	private void drawSquare(Graphics g, int row, int col, Boolean[][] matrix, boolean callRepaint) {
 		Insets insets = getInsets();
 		double rowHeight = (double) (getHeight() - insets.top - insets.bottom)
 				/ rows;
@@ -149,7 +151,7 @@ public class MatrixBoard extends JPanel {
 		int w = Math.max(1, (int) Math.round(colWidth * (col + 1)) + xOffset
 				- x);
 		Color c = null;
-		Boolean cellsLifeState = container.getCellState(row, col);
+		Boolean cellsLifeState = matrix[row][col];
 		if (cellsLifeState != null) {
 			c = cellsLifeState == true ? Color.WHITE : Color.RED;
 		}
@@ -173,7 +175,7 @@ public class MatrixBoard extends JPanel {
 	 */
 	private void drawSquare(int row, int col) {
 		Graphics g = getMosaicBufImage().getGraphics();
-		drawSquare(g, row, col, true);
+		drawSquare(g, row, col, container.getMatrix(), true);
 		g.dispose();
 	}
 }

@@ -1,0 +1,105 @@
+package com.conway.lifecycle.mediator;
+
+import com.conway.container.CellsStateMatrixContainerInf;
+import com.conway.lifecycle.LifeCycleController;
+import com.conway.ui.components.MatrixBoard;
+
+/**
+ * @author Yurii Moroz.
+ *
+ */
+public class GuiLifeMediator implements GuiLifeMediatorInf {
+	
+	/** Matrix board GUI component. */
+	private MatrixBoard board;
+	
+	/** Default time out. */
+	private CellsStateMatrixContainerInf container;
+	
+	/** Life cycle controller. */
+	private LifeCycleController controller;
+		
+	/** Number of threads. */
+	private int threadsCount;
+
+	/**
+	 * Class constructor.
+	 * 
+	 * @param threadsCount
+	 * @param gamePanel
+	 * @param container
+	 */
+	public GuiLifeMediator(int threadsCount, MatrixBoard gamePanel,
+			CellsStateMatrixContainerInf container) {
+		this.threadsCount = threadsCount;
+		this.board = gamePanel;
+		this.container = container;
+	}
+	
+	/**
+	 * Start or notify application controller.
+	 * 
+	 * @param isOnceCycle
+	 * @param isStart
+	 */
+	public void runConroller(boolean isOneCycle, Boolean isStart) {
+
+		if (controller == null) {
+			controller = new LifeCycleController(container.getGridSize(),
+					threadsCount, this);
+		}
+
+		if (!isOneCycle) {
+			controller.setRunAllTime(isStart);
+		}
+		
+		switch (controller.getState()) {
+		case NEW:
+			controller.start();
+			break;
+		case WAITING:
+			controller.doNotify();
+			break;
+		default:
+			break;
+		}
+	}
+
+	/**
+	 * Set number of threads to chain of
+	 * application life cycle.
+	 * 
+	 * @param threadsCount
+	 */
+	public void setThreadsCount(int threadsCount) {
+		if(controller != null && this.threadsCount != threadsCount) {
+			controller.reInitThreadsParams(threadsCount);
+		}
+		this.threadsCount = threadsCount;
+	}
+
+	/**
+	 * Update container value by input x, y coordinates. 
+	 * 
+	 * @param row
+	 * @param col
+	 * @param value
+	 */
+	public void updateContainer(int row, int col, Boolean value) {
+		container.setCellState(row, col, value);
+	}
+
+	/**
+	 * Return matrix container structure copy.
+	 * 
+	 * @return matrix copy
+	 */
+	public Object getMatrixCopy() {
+		return container.getMatrixCopy();
+
+	}
+	
+	public void repaintBoard() {
+		board.repaint();
+	}
+}

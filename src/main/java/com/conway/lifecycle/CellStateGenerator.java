@@ -30,14 +30,13 @@ public class CellStateGenerator implements
 		this.gridSize = gridSize;
 		this.matrix = matrix;
 		
+		this.boardPartSize = boardPartSize;
 		if (startFromBoardPart < 0) {
 			this.startFromBoardPart = gridSize + startFromBoardPart;
-			this.endWithBoardPart = gridSize - this.boardPartSize - 1;
 		} else {
 			this.startFromBoardPart = startFromBoardPart;
-			this.endWithBoardPart = startFromBoardPart + boardPartSize - 1;
 		}
-		this.boardPartSize = boardPartSize;
+		this.endWithBoardPart = this.startFromBoardPart + boardPartSize - 1;
 	}
 
 
@@ -55,7 +54,7 @@ public class CellStateGenerator implements
 				if (Boolean.TRUE.equals(cellState)
 						&& (aliveCellsCounter < 2 || aliveCellsCounter > 3)) {
 					resultList.add(new CellCoordPair<Integer, Integer>(i, j, false));
-				} else if (aliveCellsCounter == 3) {
+				} else if (aliveCellsCounter == 3 && !Boolean.TRUE.equals(cellState)) {
 					resultList.add(new CellCoordPair<Integer, Integer>(i, j, true));
 				}
 			}

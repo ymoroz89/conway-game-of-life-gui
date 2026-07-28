@@ -4,9 +4,9 @@ public class CellCoordPair<L, R> {
 
     private final L left;
     private final R right;
-    private final boolean isAlive;
+    private final Boolean isAlive;
 
-    public CellCoordPair(L left, R right, boolean isAlive) {
+    public CellCoordPair(L left, R right, Boolean isAlive) {
         this.left = left;
         this.right = right;
         this.isAlive = isAlive;
@@ -20,7 +20,7 @@ public class CellCoordPair<L, R> {
         return right;
     }
 
-    public boolean isAlive() {
+    public Boolean isAlive() {
         return isAlive;
     }
 }

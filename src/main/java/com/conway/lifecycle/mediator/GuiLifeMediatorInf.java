@@ -5,10 +5,10 @@ public interface GuiLifeMediatorInf {
 	/**
 	 * Start or notify application controller.
 	 * 
-	 * @param isOnceCycle
+	 * @param isOneCycle
 	 * @param isStart
 	 */
-	public void runConroller(boolean isOnceCycle, Boolean isStart);
+	public void runConroller(boolean isOneCycle, Boolean isStart);
 	
 	/**
 	 * Set number of threads.
@@ -31,7 +31,7 @@ public interface GuiLifeMediatorInf {
 	 * 
 	 * @return matrix copy
 	 */
-	public Object getMatrixCopy();
+	public Boolean[][] getMatrixCopy();
 	
 	/**
 	 * Repaint board GUI component.

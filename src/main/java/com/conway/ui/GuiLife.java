@@ -175,7 +175,7 @@ public class GuiLife extends JPanel {
 
 			public void mousePressed(MouseEvent e) {
 				int row = getGamePanel().yCoordToRowNumber(e.getY());
-				int col = getGamePanel().yCoordToRowNumber(e.getX());
+				int col = getGamePanel().xCoordToColumnNumber(e.getX());
 
 				if (row >= 0 && row < DEFAULT_GRID_SIZE && col >= 0
 						&& col < DEFAULT_GRID_SIZE) {
@@ -197,15 +197,12 @@ public class GuiLife extends JPanel {
 			}
 
 			public void mouseExited(MouseEvent e) {
-				new UnsupportedOperationException();
 			}
 
 			public void mouseEntered(MouseEvent e) {
-				new UnsupportedOperationException();
 			}
 
 			public void mouseClicked(MouseEvent e) {
-				new UnsupportedOperationException();
 			}
 		};
 	}

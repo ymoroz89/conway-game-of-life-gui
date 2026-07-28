@@ -136,9 +136,9 @@ public class MatrixBoard extends JPanel {
 	 */
 	private void drawSquare(Graphics g, int row, int col, boolean callRepaint) {
 		Insets insets = getInsets();
-		double rowHeight = (double) (getHeight() - insets.left - insets.right)
+		double rowHeight = (double) (getHeight() - insets.top - insets.bottom)
 				/ rows;
-		double colWidth = (double) (getWidth() - insets.top - insets.bottom)
+		double colWidth = (double) (getWidth() - insets.left - insets.right)
 				/ columns;
 		int xOffset = insets.left;
 		int yOffset = insets.top;

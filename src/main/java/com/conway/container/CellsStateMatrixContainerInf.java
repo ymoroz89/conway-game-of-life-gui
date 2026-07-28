@@ -11,7 +11,7 @@ public interface CellsStateMatrixContainerInf {
 	 * 
 	 * @return matrix copy.
 	 */
-	public Object getMatrixCopy();
+	public Boolean[][] getMatrixCopy();
 	
 	/**
 	 * Get cell state by x, y coordinates.

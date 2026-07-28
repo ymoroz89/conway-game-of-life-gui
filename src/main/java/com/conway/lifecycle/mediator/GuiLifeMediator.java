@@ -39,7 +39,7 @@ public class GuiLifeMediator implements GuiLifeMediatorInf {
 	/**
 	 * Start or notify application controller.
 	 * 
-	 * @param isOnceCycle
+	 * @param isOneCycle
 	 * @param isStart
 	 */
 	public void runConroller(boolean isOneCycle, Boolean isStart) {
@@ -52,8 +52,14 @@ public class GuiLifeMediator implements GuiLifeMediatorInf {
 		if (!isOneCycle) {
 			controller.setRunAllTime(isStart);
 		}
-		
-		switch (controller.getState()) {
+
+		if (isStart != null && !isStart) {
+			controller.terminate();
+			controller = null;
+			return;
+		}
+
+		switch (controller.getInternalState()) {
 		case NEW:
 			controller.start();
 			break;
@@ -94,7 +100,7 @@ public class GuiLifeMediator implements GuiLifeMediatorInf {
 	 * 
 	 * @return matrix copy
 	 */
-	public Object getMatrixCopy() {
+	public Boolean[][] getMatrixCopy() {
 		return container.getMatrixCopy();
 
 	}

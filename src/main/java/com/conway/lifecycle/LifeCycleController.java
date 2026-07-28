@@ -17,9 +17,9 @@ import com.conway.pair.CellCoordPair;
  * @author Yurii Moroz.
  *
  */
-public class LifeCycleController extends Thread {
+public class LifeCycleController implements Runnable {
 
-	/** Serial version UID. */
+	/** Logger. */
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(LifeCycleController.class);
 
@@ -42,10 +42,14 @@ public class LifeCycleController extends Thread {
 
 	/** Is run all time without waiting. */
 	private boolean isRunAllTime;
-	
+
+	private volatile boolean isTerminated = false;
+
 	private ExecutorService threadPool;
-	
+
 	private CompletionService<ArrayList<CellCoordPair<Integer, Integer>>> pool;
+
+	private Thread internalThread;
 
 	/**
 	 * Class constructor.
@@ -67,22 +71,41 @@ public class LifeCycleController extends Thread {
 
 	@Override
 	public void run() {
-		int iterationNumber = 10000;
+		int maxIterations = 10000;
+		int iterationNumber = 0;
 		long dataInMillis = System.currentTimeMillis();
-		LOGGER.info("Number of iteration {}", iterationNumber);
-		while (iterationNumber > 0) {
-			
+		LOGGER.info("Starting simulation. Max iterations: {}", maxIterations);
+		while (iterationNumber < maxIterations && !isTerminated) {
+
 			runNextGenerationLogic();
 			mediator.repaintBoard();
-			iterationNumber -=1;
-			
+			iterationNumber++;
+
 			if (!isRunAllTime) {
 				doWait();
 			}
 		}
-		long workTime = (System.currentTimeMillis() - dataInMillis)/1000;
-		long tps = iterationNumber / (workTime);
-		LOGGER.info("Number of threads {}, work time {}, Tps {}.", threadsCount, workTime, tps);
+		long workTime = (System.currentTimeMillis() - dataInMillis) / 1000;
+		long tps = workTime > 0 ? iterationNumber / workTime : iterationNumber;
+		LOGGER.info("Simulation ended. Number of threads {}, work time {}s, Total iterations {}, Tps {}.",
+				threadsCount, workTime, iterationNumber, tps);
+		threadPool.shutdown();
+	}
+
+	public synchronized void start() {
+		if (internalThread == null) {
+			internalThread = new Thread(this, "LifeCycleControllerThread");
+			internalThread.start();
+		}
+	}
+
+	public void terminate() {
+		isTerminated = true;
+		doNotify();
+	}
+
+	public synchronized Thread.State getInternalState() {
+		return internalThread == null ? Thread.State.NEW : internalThread.getState();
 	}
 
 	/**
@@ -91,7 +114,7 @@ public class LifeCycleController extends Thread {
 	 */
 	private void runNextGenerationLogic() {
 
-		Boolean[][] matrix = (Boolean[][]) mediator.getMatrixCopy();
+		Boolean[][] matrix = mediator.getMatrixCopy();
 		int startFromBoardPart = 0;
 		for (int i = 0; i < threadsCount; i++) {
 
@@ -105,19 +128,20 @@ public class LifeCycleController extends Thread {
 			startFromBoardPart = startFromBoardPart + boardPartSize;
 		}
 
+		resultList.clear();
 		for (int i = 0; i < threadsCount; i++) {
 			try {
 				ArrayList<CellCoordPair<Integer, Integer>> futureGet = pool
 						.take().get();
-				if (!futureGet.isEmpty()) {
+				if (futureGet != null && !futureGet.isEmpty()) {
 					resultList.addAll(futureGet);
 				}
 			} catch (InterruptedException e) {
-				LOGGER.error("InterruptedException happend.");
-				e.printStackTrace();
+				LOGGER.error("InterruptedException happened.");
+				Thread.currentThread().interrupt();
+				return;
 			} catch (ExecutionException e) {
-				LOGGER.error("ExecutionException happend.");
-				e.printStackTrace();
+				LOGGER.error("ExecutionException happened.", e);
 			}
 		}
 
@@ -125,7 +149,6 @@ public class LifeCycleController extends Thread {
 			mediator.updateContainer(
 					pair.getLeft(), pair.getRight(), pair.isAlive());
 		}
-		resultList.clear();
 	}
 
 	/**
@@ -162,9 +185,9 @@ public class LifeCycleController extends Thread {
 	}
 
 	/**
-	 * Set startLogic.
+	 * Set runAllTime.
 	 * 
-	 * @param startLogic
+	 * @param allTime
 	 */
 	public void setRunAllTime(boolean allTime) {
 		this.isRunAllTime = allTime;

@@ -77,7 +77,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 		int c = 120;
 		matrix[5][1] = matrix[5][2] = matrix[6][1] = matrix[6][2] = 
 			matrix[5][11] = matrix[6][11] = matrix[7][11] = 
-			matrix[6][11] = matrix[4][12] = matrix[8][12] =
+			matrix[4][12] = matrix[8][12] =
 			matrix[3][13] = matrix[3][14] = matrix[9][13] = 
 			matrix[9][14] = matrix[6][15] = matrix[4][16] =
 			matrix[8][16] = matrix[7][17] = matrix[6][17] =

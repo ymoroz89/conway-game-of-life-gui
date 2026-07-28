@@ -143,6 +143,7 @@ public class GuiLife extends JPanel {
 		getNextGenarationButton().setEnabled(!isStartButton);
 		getClearButton().setEnabled(!isStartButton);
 		getThreadsCountJTextField().setEnabled(!isStartButton);
+		getGamePanel().setCursor(isStartButton ? null : java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 	}
 
 	/**
@@ -161,6 +162,7 @@ public class GuiLife extends JPanel {
 			gamePanel = new MatrixBoard(DEFAULT_GRID_SIZE, DEFAULT_GRID_SIZE,
 					getCellSize(), getCellSize(), container);
 			gamePanel.addMouseListener(getGamePanelMouseListener());
+			gamePanel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 		}
 		return gamePanel;
 	}
@@ -172,6 +174,9 @@ public class GuiLife extends JPanel {
 		return new MouseAdapter() {
 
 			public void mousePressed(MouseEvent e) {
+				if (mediator.isRunning()) {
+					return;
+				}
 				int row = getGamePanel().yCoordToRowNumber(e.getY());
 				int col = getGamePanel().xCoordToColumnNumber(e.getX());
 

@@ -108,4 +108,9 @@ public class GuiLifeMediator implements GuiLifeMediatorInf {
 	public void repaintBoard() {
 		board.repaint();
 	}
+
+	@Override
+	public boolean isRunning() {
+		return controller != null && controller.isAlive();
+	}
 }

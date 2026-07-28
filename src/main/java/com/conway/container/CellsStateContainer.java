@@ -25,7 +25,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * 
 	 * @return matrix copy.
 	 */
-	public Boolean[][] getMatrixCopy() {
+	public synchronized Boolean[][] getMatrixCopy() {
 		Boolean[][] matrixCopy = new Boolean[matrix.length][matrix.length];
 		makeMatrixCopy(matrix, matrixCopy);
 		return matrixCopy;
@@ -40,7 +40,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * @param col
 	 * @return state of cell
 	 */
-	public Boolean getCellState(int row, int col) {
+	public synchronized Boolean getCellState(int row, int col) {
 		return matrix[row][col];
 	}
 	
@@ -53,7 +53,7 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	 * @param col
 	 * @param state
 	 */
-	public void setCellState(int row, int col, Boolean state) {
+	public synchronized void setCellState(int row, int col, Boolean state) {
 		matrix[row][col] = state;
 	}
 	
@@ -69,11 +69,11 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 	/**
 	 * Clear container.
 	 */
-	public void clearContainer() {
+	public synchronized void clearContainer() {
 		clearMatrix(matrix);
 	}
 	
-	public void setGliderGunPattern() {
+	public synchronized void setGliderGunPattern() {
 		int c = 120;
 		matrix[5][1] = matrix[5][2] = matrix[6][1] = matrix[6][2] = 
 			matrix[5][11] = matrix[6][11] = matrix[7][11] = 

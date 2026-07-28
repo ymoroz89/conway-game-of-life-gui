@@ -108,6 +108,10 @@ public class LifeCycleController implements Runnable {
 		return internalThread == null ? Thread.State.NEW : internalThread.getState();
 	}
 
+	public boolean isAlive() {
+		return internalThread != null && internalThread.isAlive();
+	}
+
 	/**
 	 * Create cells generator's threads and set mask(copy) of the matrix container
 	 * structure.

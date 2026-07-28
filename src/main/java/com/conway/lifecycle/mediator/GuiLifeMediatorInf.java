@@ -38,4 +38,6 @@ public interface GuiLifeMediatorInf {
 	 */
 	public void repaintBoard();
 	
+	public boolean isRunning();
+	
 }

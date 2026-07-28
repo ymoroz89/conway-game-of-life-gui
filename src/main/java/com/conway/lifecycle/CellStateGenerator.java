@@ -36,7 +36,7 @@ public class CellStateGenerator implements
 		} else {
 			this.startFromBoardPart = startFromBoardPart;
 		}
-		this.endWithBoardPart = this.startFromBoardPart + boardPartSize - 1;
+		this.endWithBoardPart = this.startFromBoardPart + this.boardPartSize - 1;
 	}
 
 

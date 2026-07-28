@@ -197,12 +197,15 @@ public class GuiLife extends JPanel {
 			}
 
 			public void mouseExited(MouseEvent e) {
+				throw new UnsupportedOperationException();
 			}
 
 			public void mouseEntered(MouseEvent e) {
+				throw new UnsupportedOperationException();
 			}
 
 			public void mouseClicked(MouseEvent e) {
+				throw new UnsupportedOperationException();
 			}
 		};
 	}

@@ -86,9 +86,9 @@ public class CellsStateContainer implements CellsStateMatrixContainerInf {
 			matrix[3][21] = matrix[3][22] = matrix[2][23] =
 			matrix[6][23] = matrix[1][25] = matrix[2][25] =
 			matrix[6][25] = matrix[7][25] = matrix[3][35] =
-			matrix[4][35] = matrix[3][36] = matrix[4][36] = 
+			matrix[4][35] = matrix[3][36] = matrix[4][36] = true;
 		
-			matrix[c+75][c+79] = matrix[c+75][c+78] = matrix[c+74][c+78] = 
+		matrix[c+75][c+79] = matrix[c+75][c+78] = matrix[c+74][c+78] = 
 			matrix[c+74][c+79] = matrix[c+75][c+69] = matrix[c+74][c+69] = 
 			matrix[c+73][c+69] = matrix[c+72][c+68] = matrix[c+76][c+68] = 
 			matrix[c+71][c+67] = matrix[c+71][c+66] = matrix[c+77][c+67] = 

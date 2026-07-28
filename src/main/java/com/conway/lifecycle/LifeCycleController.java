@@ -86,7 +86,7 @@ public class LifeCycleController implements Runnable {
 			}
 		}
 		long workTime = (System.currentTimeMillis() - dataInMillis) / 1000;
-		long tps = workTime > 0 ? iterationNumber / workTime : iterationNumber;
+		long tps = workTime > 0 ? (long) iterationNumber / workTime : 0;
 		LOGGER.info("Simulation ended. Number of threads {}, work time {}s, Total iterations {}, Tps {}.",
 				threadsCount, workTime, iterationNumber, tps);
 		threadPool.shutdown();

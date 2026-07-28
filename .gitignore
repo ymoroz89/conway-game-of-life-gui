@@ -1,4 +1,4 @@
 *.iml
 /.idea/
 /target/
-/logs/gui_life.log
+/logs/

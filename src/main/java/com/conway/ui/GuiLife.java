@@ -5,6 +5,7 @@ import java.awt.Dimension;
 import java.awt.GridLayout;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 
@@ -168,10 +169,7 @@ public class GuiLife extends JPanel {
 	 * @return gamePanel MouseListener.
 	 */
 	private MouseListener getGamePanelMouseListener() {
-		return new MouseListener() {
-
-			public void mouseReleased(MouseEvent e) {
-			}
+		return new MouseAdapter() {
 
 			public void mousePressed(MouseEvent e) {
 				int row = getGamePanel().yCoordToRowNumber(e.getY());
@@ -194,18 +192,6 @@ public class GuiLife extends JPanel {
 								row, col);
 					}
 				}
-			}
-
-			public void mouseExited(MouseEvent e) {
-				throw new UnsupportedOperationException();
-			}
-
-			public void mouseEntered(MouseEvent e) {
-				throw new UnsupportedOperationException();
-			}
-
-			public void mouseClicked(MouseEvent e) {
-				throw new UnsupportedOperationException();
 			}
 		};
 	}

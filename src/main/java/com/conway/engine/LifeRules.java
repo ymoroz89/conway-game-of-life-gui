@@ -7,7 +7,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-
+import com.conway.model.ActiveRegion;
 import com.conway.model.Generation;
 
 /**
@@ -54,11 +54,18 @@ public final class LifeRules {
         final boolean[] dst = new boolean[src.length];
         final boolean[] dstEver = new boolean[src.length];
 
+        ActiveRegion active = current.activeRegion().pad(width, height);
+        if (active.isEmpty()) {
+            return Generation.adopt(width, height, dst, dstEver, current.number() + 1, ActiveRegion.EMPTY);
+        }
+
         int bands = Math.max(1, Math.min(partitions, height));
+        ActiveRegion[] bandRegions = new ActiveRegion[bands];
+
         if (bands == 1) {
-            computeBand(src, srcEver, dst, dstEver, width, height, 0, height);
+            bandRegions[0] = computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active);
         } else {
-            List<Callable<Void>> tasks = new ArrayList<>(bands);
+            List<Callable<ActiveRegion>> tasks = new ArrayList<>(bands);
             int baseSize = height / bands;
             int remainder = height % bands;
             int start = 0;
@@ -67,68 +74,111 @@ public final class LifeRules {
                 final int from = start;
                 final int to = start + size;
                 start = to;
-                tasks.add(() -> {
-                    computeBand(src, srcEver, dst, dstEver, width, height, from, to);
-                    return null;
-                });
+                tasks.add(() -> computeBand(src, srcEver, dst, dstEver, width, height, from, to, active));
             }
-            for (Future<Void> future : executor.invokeAll(tasks)) {
+            int i = 0;
+            for (Future<ActiveRegion> future : executor.invokeAll(tasks)) {
                 try {
-                    future.get();
+                    bandRegions[i++] = future.get();
                 } catch (ExecutionException e) {
-                    // A failed band means the generation is incomplete. Surfacing it is
-                    // the only correct option: continuing would silently propagate a
-                    // wrong board through every subsequent generation.
                     throw new SimulationException("Generation computation failed", e.getCause());
                 }
             }
         }
-        return Generation.adopt(width, height, dst, dstEver, current.number() + 1);
+
+        ActiveRegion nextActive = ActiveRegion.EMPTY;
+        for (ActiveRegion r : bandRegions) {
+            nextActive = nextActive.merge(r);
+        }
+
+        return Generation.adopt(width, height, dst, dstEver, current.number() + 1, nextActive);
     }
 
-    /**
-     * Applies the rules to rows {@code [fromRow, toRow)}.
-     *
-     * <p>Interior rows use an unrolled neighbour sum with no per-neighbour bounds
-     * checks; only the first and last row and column take the guarded path. For a
-     * 201x201 board that removes roughly 320k branches per generation.
-     */
-    private static void computeBand(boolean[] src, boolean[] srcEver,
-                                    boolean[] dst, boolean[] dstEver,
-                                    int width, int height, int fromRow, int toRow) {
-        for (int row = fromRow; row < toRow; row++) {
+    private static ActiveRegion computeBand(boolean[] src, boolean[] srcEver,
+                                            boolean[] dst, boolean[] dstEver,
+                                            int width, int height, int fromRow, int toRow,
+                                            ActiveRegion activeLimit) {
+        int minRow = Integer.MAX_VALUE, maxRow = -1, minCol = Integer.MAX_VALUE, maxCol = -1;
+
+        int rowStart = Math.max(fromRow, activeLimit.minRow());
+        int rowEnd = Math.min(toRow, activeLimit.maxRow() + 1);
+
+        for (int row = rowStart; row < rowEnd; row++) {
             int rowBase = row * width;
+            int colStart = activeLimit.minCol();
+            int colEnd = activeLimit.maxCol() + 1;
 
             if (row > 0 && row < height - 1 && width > 2) {
                 int up = rowBase - width;
                 int down = rowBase + width;
 
-                dst[rowBase] = ruleAt(src, width, height, row, 0);
-                for (int col = 1; col < width - 1; col++) {
+                if (colStart == 0) {
+                    dst[rowBase] = ruleAt(src, width, height, row, 0);
+                    if (dst[rowBase]) {
+                        minRow = Math.min(minRow, row);
+                        maxRow = Math.max(maxRow, row);
+                        minCol = Math.min(minCol, 0);
+                        maxCol = Math.max(maxCol, 0);
+                    }
+                    colStart = 1;
+                }
+
+                int effectiveColEnd = Math.min(colEnd, width - 1);
+
+                for (int col = colStart; col < effectiveColEnd; col++) {
                     int i = rowBase + col;
                     int neighbours =
                             (src[up + col - 1] ? 1 : 0)
-                          + (src[up + col] ? 1 : 0)
-                          + (src[up + col + 1] ? 1 : 0)
-                          + (src[i - 1] ? 1 : 0)
-                          + (src[i + 1] ? 1 : 0)
-                          + (src[down + col - 1] ? 1 : 0)
-                          + (src[down + col] ? 1 : 0)
-                          + (src[down + col + 1] ? 1 : 0);
+                                    + (src[up + col] ? 1 : 0)
+                                    + (src[up + col + 1] ? 1 : 0)
+                                    + (src[i - 1] ? 1 : 0)
+                                    + (src[i + 1] ? 1 : 0)
+                                    + (src[down + col - 1] ? 1 : 0)
+                                    + (src[down + col] ? 1 : 0)
+                                    + (src[down + col + 1] ? 1 : 0);
                     dst[i] = src[i] ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
+                    if (dst[i]) {
+                        minRow = Math.min(minRow, row);
+                        maxRow = Math.max(maxRow, row);
+                        minCol = Math.min(minCol, col);
+                        maxCol = Math.max(maxCol, col);
+                    }
                 }
-                dst[rowBase + width - 1] = ruleAt(src, width, height, row, width - 1);
-            } else {
-                for (int col = 0; col < width; col++) {
-                    dst[rowBase + col] = ruleAt(src, width, height, row, col);
-                }
-            }
 
-            for (int col = 0; col < width; col++) {
-                int i = rowBase + col;
-                dstEver[i] = srcEver[i] || dst[i];
+                if (colEnd == width) {
+                    int i = rowBase + width - 1;
+                    dst[i] = ruleAt(src, width, height, row, width - 1);
+                    if (dst[i]) {
+                        minRow = Math.min(minRow, row);
+                        maxRow = Math.max(maxRow, row);
+                        minCol = Math.min(minCol, width - 1);
+                        maxCol = Math.max(maxCol, width - 1);
+                    }
+                }
+            } else {
+                for (int col = colStart; col < colEnd; col++) {
+                    int i = rowBase + col;
+                    dst[i] = ruleAt(src, width, height, row, col);
+                    if (dst[i]) {
+                        minRow = Math.min(minRow, row);
+                        maxRow = Math.max(maxRow, row);
+                        minCol = Math.min(minCol, col);
+                        maxCol = Math.max(maxCol, col);
+                    }
+                }
             }
         }
+
+        for (int row = fromRow; row < toRow; row++) {
+            int rowBase = row * width;
+            System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);
+            for (int col = 0; col < width; col++) {
+                int i = rowBase + col;
+                dstEver[i] |= dst[i];
+            }
+        }
+
+        return new ActiveRegion(minRow, maxRow, minCol, maxCol);
     }
 
     /** Bounds-checked rule evaluation, used for cells on the border of the board. */

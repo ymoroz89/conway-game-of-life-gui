@@ -31,13 +31,15 @@ public final class Generation {
     private final boolean[] alive;
     private final boolean[] everAlive;
     private final long number;
+    private final ActiveRegion activeRegion;
 
-    private Generation(int width, int height, boolean[] alive, boolean[] everAlive, long number) {
+    private Generation(int width, int height, boolean[] alive, boolean[] everAlive, long number, ActiveRegion activeRegion) {
         this.width = width;
         this.height = height;
         this.alive = alive;
         this.everAlive = everAlive;
         this.number = number;
+        this.activeRegion = activeRegion;
     }
 
     /**
@@ -52,25 +54,50 @@ public final class Generation {
                     "Board dimensions must be positive but were " + width + "x" + height);
         }
         int cells = Math.multiplyExact(width, height);
-        return new Generation(width, height, new boolean[cells], new boolean[cells], 0L);
+        return new Generation(width, height, new boolean[cells], new boolean[cells], 0L, ActiveRegion.EMPTY);
     }
 
     /**
-     * Wraps caller-supplied arrays without copying them.
-     *
-     * <p>The caller transfers ownership: after this call it must never read from or
-     * write to {@code alive} or {@code everAlive} again. This exists so the rules
-     * engine can compute directly into the arrays that become the next snapshot,
-     * avoiding a full board copy per generation.
-     *
-     * @throws IllegalArgumentException if the array lengths do not match the dimensions
+     * Wraps caller-supplied arrays and computes the active region.
      */
     public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive, long number) {
         int expected = Math.multiplyExact(width, height);
         if (alive.length != expected || everAlive.length != expected) {
             throw new IllegalArgumentException("Array length does not match " + width + "x" + height);
         }
-        return new Generation(width, height, alive, everAlive, number);
+        return new Generation(width, height, alive, everAlive, number, computeActiveRegion(width, height, alive));
+    }
+
+    /**
+     * Wraps caller-supplied arrays with a pre-computed active region.
+     *
+     * <p>The caller transfers ownership: after this call it must never read from or
+     * write to {@code alive} or {@code everAlive} again.
+     *
+     * @throws IllegalArgumentException if the array lengths do not match the dimensions
+     */
+    public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive, long number, ActiveRegion activeRegion) {
+        int expected = Math.multiplyExact(width, height);
+        if (alive.length != expected || everAlive.length != expected) {
+            throw new IllegalArgumentException("Array length does not match " + width + "x" + height);
+        }
+        return new Generation(width, height, alive, everAlive, number, activeRegion);
+    }
+
+    private static ActiveRegion computeActiveRegion(int width, int height, boolean[] alive) {
+        int minRow = Integer.MAX_VALUE, maxRow = -1, minCol = Integer.MAX_VALUE, maxCol = -1;
+        for (int r = 0; r < height; r++) {
+            int rowBase = r * width;
+            for (int c = 0; c < width; c++) {
+                if (alive[rowBase + c]) {
+                    minRow = Math.min(minRow, r);
+                    maxRow = Math.max(maxRow, r);
+                    minCol = Math.min(minCol, c);
+                    maxCol = Math.max(maxCol, c);
+                }
+            }
+        }
+        return new ActiveRegion(minRow, maxRow, minCol, maxCol);
     }
 
     public int width() {
@@ -124,6 +151,11 @@ public final class Generation {
         return everAlive;
     }
 
+    /** The bounding box of all alive cells. */
+    public ActiveRegion activeRegion() {
+        return activeRegion;
+    }
+
     /**
      * Returns a copy of this generation with a single cell forced to the given state.
      *
@@ -140,7 +172,7 @@ public final class Generation {
         int index = row * width + col;
         newAlive[index] = live;
         newEver[index] = live;
-        return new Generation(width, height, newAlive, newEver, number);
+        return adopt(width, height, newAlive, newEver, number);
     }
 
     /**
@@ -168,7 +200,7 @@ public final class Generation {
                 newEver[index] = true;
             }
         }
-        return new Generation(width, height, newAlive, newEver, number);
+        return adopt(width, height, newAlive, newEver, number);
     }
 
     private void checkBounds(int row, int col) {
@@ -189,6 +221,7 @@ public final class Generation {
         return width == other.width
                 && height == other.height
                 && number == other.number
+                && activeRegion.equals(other.activeRegion)
                 && Arrays.equals(alive, other.alive)
                 && Arrays.equals(everAlive, other.everAlive);
     }

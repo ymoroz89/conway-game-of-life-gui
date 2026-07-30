@@ -175,4 +175,32 @@ class LifeRulesTest {
         assertTrue(next.wasEverAlive(1, 1));
         assertFalse(next.wasEverAlive(0, 0));
     }
+    @Test
+    void optimizedMatchesReference() throws InterruptedException {
+        int width = 50;
+        int height = 50;
+        boolean[] initial = new boolean[width * height];
+        // Blinker
+        initial[10 * width + 10] = true;
+        initial[11 * width + 10] = true;
+        initial[12 * width + 10] = true;
+
+        Generation gen0 = Generation.adopt(width, height, initial, initial.clone(), 0);
+        
+        Generation gen1 = rules.next(gen0, 1);
+        
+        // Expected blinker horizontal
+        assertTrue(gen1.isAlive(11, 9));
+        assertTrue(gen1.isAlive(11, 10));
+        assertTrue(gen1.isAlive(11, 11));
+        assertFalse(gen1.isAlive(10, 10));
+        assertFalse(gen1.isAlive(12, 10));
+        
+        // Check wasEverAlive
+        assertTrue(gen1.wasEverAlive(10, 10));
+        assertTrue(gen1.wasEverAlive(11, 9));
+        assertTrue(gen1.wasEverAlive(11, 10));
+        assertTrue(gen1.wasEverAlive(11, 11));
+        assertTrue(gen1.wasEverAlive(12, 10));
+    }
 }

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import com.conway.engine.SimulationEngine;
+import com.conway.engine.SimulationSeeder;
 import com.conway.model.Generation;
 
 /**
@@ -29,7 +30,7 @@ class MainSeedingTest {
     @DisplayName("The default grid is seeded with two guns in the historical positions")
     void seedsTwoGunsOnTheDefaultGrid() throws Exception {
         try (SimulationEngine engine = new SimulationEngine(DEFAULT_GRID, DEFAULT_GRID, 2)) {
-            Main.seedBoard(engine, DEFAULT_GRID);
+            SimulationSeeder.seedBoard(engine, DEFAULT_GRID);
             assertTrue(engine.sync(10, TimeUnit.SECONDS));
 
             Generation board = engine.currentGeneration();
@@ -55,7 +56,7 @@ class MainSeedingTest {
     @DisplayName("The seeded default board actually runs and emits gliders")
     void seededBoardRunsAndGrows() throws Exception {
         try (SimulationEngine engine = new SimulationEngine(DEFAULT_GRID, DEFAULT_GRID, 4)) {
-            Main.seedBoard(engine, DEFAULT_GRID);
+            SimulationSeeder.seedBoard(engine, DEFAULT_GRID);
             engine.setPartitions(4);
             assertTrue(engine.sync(10, TimeUnit.SECONDS));
 
@@ -82,7 +83,7 @@ class MainSeedingTest {
     @DisplayName("A grid too small for the guns is seeded without failing")
     void smallGridIsSeededWithoutFailing() throws Exception {
         try (SimulationEngine engine = new SimulationEngine(12, 12, 2)) {
-            Main.seedBoard(engine, 12);
+            SimulationSeeder.seedBoard(engine, 12);
             assertTrue(engine.sync(10, TimeUnit.SECONDS));
 
             // Clipped rather than thrown: the engine is still usable.

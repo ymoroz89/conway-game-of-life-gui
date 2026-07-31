@@ -295,6 +295,84 @@ class SimulationEngineTest {
         return Pattern.parse("blinker", List.of("OOO"));
     }
 
+    @Test
+    @DisplayName("The worker pool holds no more threads than the partition count in use")
+    @Timeout(30)
+    void workerPoolIsBoundedByPartitionCount() throws Exception {
+        // ThreadPoolExecutor starts a thread per submitted task until the core size is
+        // reached, even when idle threads are free. With the core pinned at maxPartitions
+        // this accumulated one worker per partition per generation until every one existed:
+        // a thread dump showed 20 live workers serving 4 concurrent bands.
+        try (SimulationEngine large = new SimulationEngine(SIZE, SIZE, 16)) {
+            blinker(large);
+            large.setPartitions(2);
+            step(large, 200);
+
+            assertTrue(large.workerThreadCount() <= 2,
+                    "expected at most 2 workers for 2 partitions but found "
+                            + large.workerThreadCount());
+        }
+    }
+
+    @Test
+    @DisplayName("Raising the partition count lets the pool grow to match")
+    @Timeout(30)
+    void workerPoolGrowsWithPartitionCount() throws Exception {
+        try (SimulationEngine large = new SimulationEngine(SIZE, SIZE, 16)) {
+            blinker(large);
+            large.setPartitions(2);
+            step(large, 50);
+
+            large.setPartitions(8);
+            step(large, 50);
+
+            await(() -> large.workerThreadCount() == 8);
+        }
+    }
+
+    @Test
+    @DisplayName("The pool's core size tracks the partition count up and down")
+    @Timeout(30)
+    void corePoolSizeTracksPartitionCount() throws Exception {
+        // The core size is what bounds the pool, since the queue is unbounded. Asserting it
+        // rather than the live thread count keeps this deterministic: lowering the core size
+        // does not retire surplus threads at once, because an interrupted worker re-polls
+        // and only exits once a poll times out, up to WORKER_KEEPALIVE_SECONDS later. That
+        // reclamation is the JDK's timing, not this engine's behaviour.
+        try (SimulationEngine large = new SimulationEngine(SIZE, SIZE, 16)) {
+            blinker(large);
+            assertEquals(1, large.workerCoreSize(), "a fresh engine runs a single band inline");
+
+            large.setPartitions(8);
+            step(large, 20);
+            assertEquals(8, large.workerCoreSize());
+
+            large.setPartitions(2);
+            step(large, 20);
+            assertEquals(2, large.workerCoreSize());
+
+            // Clamped to maxPartitions on the way in, so the pool can never be asked for
+            // more threads than it was built to allow.
+            large.setPartitions(999);
+            step(large, 20);
+            assertEquals(16, large.workerCoreSize());
+        }
+    }
+
+    /** A live oscillator, so the active region is never empty and bands are really submitted. */
+    private static void blinker(SimulationEngine target) {
+        target.toggleCell(10, 9);
+        target.toggleCell(10, 10);
+        target.toggleCell(10, 11);
+    }
+
+    private static void step(SimulationEngine target, int generations) throws InterruptedException {
+        for (int i = 0; i < generations; i++) {
+            target.step();
+        }
+        target.sync(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+    }
+
     private static boolean threadIsAlive(String name) {
         return Thread.getAllStackTraces().keySet().stream()
                 .anyMatch(thread -> thread.getName().equals(name) && thread.isAlive());

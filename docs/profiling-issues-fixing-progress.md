@@ -9,7 +9,7 @@ Updated as each fix lands.
 | --- | --- | --- | --- |
 | P1-1 | Renderer redraws the whole board every frame | 🔴 P1 | ✅ **Done** |
 | P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ⬜ Not started |
-| P1-3 | Worker pool five times oversized | 🔴 P1 | ⬜ Not started |
+| P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** |
 | P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ⬜ Not started |
 | P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ⬜ Not started |
 | P2-6 | Machine has substantial headroom (context only) | 🟡 P2 | ℹ️ No action |
@@ -112,6 +112,83 @@ A property test that has never been seen to fail is not evidence.
 
 ---
 
+## P1-3 — Worker pool sized to the partition count ✅ Done
+
+**Problem.** The thread dump showed **20 live `conway-worker` threads serving 4 concurrent
+bands**. The pool was created with `corePoolSize == maximumPoolSize == maxPartitions` (20).
+
+Two mechanisms combined:
+
+1. `ThreadPoolExecutor.execute` starts a *new* thread for every submitted task while the pool
+   is below its core size, even when idle threads are already available. Four bands per
+   generation therefore kept minting threads until all 20 existed.
+2. `allowCoreThreadTimeOut(true)` was already set, but never reclaimed anything: under
+   continuous stepping every thread picked up work well inside the 60 second keepalive.
+
+### Change
+
+The core size now tracks the partition count. It starts at 1 — a single band runs inline
+without touching the executor — and `setCorePoolSize(partitions)` is called when the count
+changes, from the `SetPartitions` command handler on the simulation thread. That is the same
+thread that submits bands, so the pool is always resized before the next generation uses the
+new count.
+
+The queue is unbounded, so `maximumPoolSize` is never consulted and the core size is what
+actually bounds the pool. `maximumPoolSize` stays at `maxPartitions` purely so the core can be
+raised later without violating `core <= maximum`.
+
+File: [`SimulationEngine.java`](../src/main/java/com/conway/engine/SimulationEngine.java).
+
+### Measured effect
+
+Reproducing the profiled configuration (`maxPartitions=20`, `partitions=4`, 201×201, seeded,
+run for 4 s) and counting live `conway-worker` threads:
+
+| | Live worker threads |
+| --- | --- |
+| Before | **20** |
+| After | **4** |
+
+Roughly 16 thread stacks reclaimed. This is a footprint fix, not a throughput fix — the
+threads were idle, so no CPU was being wasted.
+
+### Tests
+
+Three tests added (106 total, all passing).
+
+- `workerPoolIsBoundedByPartitionCount` — with `maxPartitions=16` and 2 partitions, at most
+  2 worker threads exist after 200 generations. This is the regression test for the finding.
+- `workerPoolGrowsWithPartitionCount` — raising the count to 8 lets the pool reach 8.
+- `corePoolSizeTracksPartitionCount` — core size follows 1 → 8 → 2 → clamped 16.
+
+All three seed a blinker first: an empty board short-circuits on an empty `ActiveRegion` and
+never submits bands, so the pool would stay empty and the tests would pass vacuously.
+
+### Correction — surplus threads are not reclaimed promptly
+
+An earlier version of this fix asserted that lowering the count retires surplus workers as
+they next go idle. **That is wrong**, and the test asserting it failed.
+
+`setCorePoolSize` does call `interruptIdleWorkers()`, but an interrupted worker parked in
+`getTask()` catches the `InterruptedException`, clears its timed-out flag and polls again. A
+worker only exits once a poll genuinely times out — so the surplus goes away within
+`WORKER_KEEPALIVE_SECONDS` (60 s), not at once.
+
+The test now asserts the core size, which is deterministic and is the part this engine
+controls; reclamation timing belongs to the JDK. The behaviour is acceptable regardless: the
+finding was unbounded accumulation, not slow reclamation.
+
+### Honest limits
+
+- **Footprint only.** Roughly 16 thread stacks, no measurable CPU or throughput change. It was
+  filed as P1 because 20 threads for 4 bands is misleading in a dump, not because it was
+  costing time.
+- **Lowering the count leaves surplus threads for up to 60 s**, as above. Shortening
+  `WORKER_KEEPALIVE_SECONDS` would tighten that, at the cost of recreating threads after any
+  pause longer than the keepalive. Not changed, as no evidence suggests it matters.
+
+---
+
 ## Reproducing the benchmark
 
 `RenderBench` lives outside the repository (it drives `BoardView` directly and is not a unit
@@ -122,3 +199,8 @@ size and cell size as arguments, and compare against
 Note when scripting this: the project shell is zsh, which does **not** word-split unquoted
 parameter expansions. `RenderBench $cfg` passes `"801 1"` as a single argument and the
 benchmark silently falls back to its defaults. Pass arguments explicitly, or use `${=cfg}`.
+
+When building an older revision for comparison, use `-Dmaven.test.skip=true` rather than
+`-DskipTests`. The latter still *compiles* test sources, so a revision predating a new
+test-visible accessor fails to build — and the previous jar is left in place, silently
+producing a "before" measurement that is really the "after" build.

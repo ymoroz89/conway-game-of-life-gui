@@ -46,6 +46,9 @@ public final class SimulationEngine implements AutoCloseable {
     private static final long SHUTDOWN_TIMEOUT_MS = 5_000L;
     private static final long WORKER_KEEPALIVE_SECONDS = 60L;
 
+    /** Partition count before anything configures one. A single band runs inline. */
+    private static final int INITIAL_PARTITIONS = 1;
+
     /** Lifecycle states reported to listeners. */
     public enum State {
         /** Idle; the board only changes in response to explicit commands. */
@@ -73,7 +76,7 @@ public final class SimulationEngine implements AutoCloseable {
     // ---- Simulation-thread-confined state. Never read or written from anywhere else. ----
     private boolean running;
     private boolean shutdownRequested;
-    private int partitions = 1;
+    private int partitions = INITIAL_PARTITIONS;
     private long generationsInRun;
     private long runStartNanos;
     private long elapsedNanos;
@@ -83,7 +86,9 @@ public final class SimulationEngine implements AutoCloseable {
      *
      * @param width         board width in cells
      * @param height        board height in cells
-     * @param maxPartitions upper bound on concurrent row bands; also the worker pool size
+     * @param maxPartitions upper bound on concurrent row bands, and so on the worker pool
+     *                      size; the pool itself is only as large as the partition count
+     *                      currently in use
      */
     public SimulationEngine(int width, int height, int maxPartitions) {
         if (maxPartitions < 1) {
@@ -92,10 +97,21 @@ public final class SimulationEngine implements AutoCloseable {
         this.maxPartitions = maxPartitions;
         this.current = Generation.empty(width, height);
 
-        // One pool for the lifetime of the engine, not one per run. Core threads are
-        // allowed to time out so an unused high partition count does not pin threads.
+        // One pool for the lifetime of the engine, not one per run.
+        //
+        // The core size tracks the partition count rather than sitting at maxPartitions.
+        // ThreadPoolExecutor starts a new thread for every submitted task until the core
+        // size is reached, even when idle threads are already available, so a core of
+        // maxPartitions accumulated one thread per partition per generation until all of
+        // them existed: a dump showed 20 live workers for 4 concurrent bands. Core
+        // timeout alone did not reclaim them, because under continuous load every thread
+        // picked up work inside the keepalive window.
+        //
+        // The queue is unbounded, so maximumPoolSize is never consulted and the core size
+        // is what actually bounds the pool. It is kept at maxPartitions so setCorePoolSize
+        // can raise the core later without violating core <= maximum.
         this.workers = new ThreadPoolExecutor(
-                maxPartitions, maxPartitions,
+                INITIAL_PARTITIONS, maxPartitions,
                 WORKER_KEEPALIVE_SECONDS, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(),
                 new NamedThreadFactory("conway-worker"));
@@ -176,6 +192,25 @@ public final class SimulationEngine implements AutoCloseable {
 
     public int maxPartitions() {
         return maxPartitions;
+    }
+
+    /**
+     * Live worker threads. This is bounded by the partition count in use, not by
+     * {@link #maxPartitions()}.
+     *
+     * <p>Package-private: it exists so the pool's sizing is observable to tests, which is
+     * otherwise only visible in a thread dump.
+     */
+    int workerThreadCount() {
+        return workers.getPoolSize();
+    }
+
+    /**
+     * The pool's core size, which is what actually bounds the thread count given the
+     * unbounded queue. Package-private for the same reason as {@link #workerThreadCount()}.
+     */
+    int workerCoreSize() {
+        return workers.getCorePoolSize();
     }
 
     public void addListener(EngineListener listener) {
@@ -302,6 +337,17 @@ public final class SimulationEngine implements AutoCloseable {
         } else if (command instanceof Command.SetPartitions setPartitions) {
             if (partitions != setPartitions.count()) {
                 partitions = setPartitions.count();
+                // Keeps the pool the same size as the work actually submitted. Handled on
+                // the simulation thread, the same thread that submits bands, so the pool is
+                // always resized before the next generation uses the new count.
+                //
+                // Raising it takes effect immediately. Lowering it does not retire the
+                // surplus promptly: setCorePoolSize interrupts idle workers, but an
+                // interrupted worker in getTask clears its timed-out flag and polls again,
+                // so a thread only exits once a poll actually times out. Surplus workers
+                // therefore go away within WORKER_KEEPALIVE_SECONDS, not at once. That is
+                // acceptable -- the bug was unbounded accumulation, not slow reclamation.
+                workers.setCorePoolSize(partitions);
                 LOG.info("Partition count changed to {}", partitions);
                 stats = new SimulationStats(
                         stats.generation(), stats.generationsInRun(), stats.elapsedNanos(), partitions);

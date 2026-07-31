@@ -7,6 +7,7 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.util.Arrays;
@@ -70,7 +71,8 @@ public final class BoardView extends JPanel {
         setPreferredSize(new Dimension(image.getWidth(), image.getHeight()));
         setMinimumSize(new Dimension(columns, rows));
         setOpaque(true);
-        setBackground(new Color(Theme.BOARD_EMPTY));
+        // The margin around a letterboxed board belongs to the window, not the board.
+        setBackground(Theme.BACKGROUND);
 
         // MouseAdapter, so unused callbacks are genuinely absent. Overriding every
         // MouseListener method and throwing from the ones that are not needed meant
@@ -78,8 +80,12 @@ public final class BoardView extends JPanel {
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
-                int row = geometry.rowAt(e.getY(), getHeight());
-                int col = geometry.columnAt(e.getX(), getWidth());
+                // Mapped through the drawn rectangle rather than the component bounds, so
+                // a press lands on the cell under the pointer even when the component is
+                // wider or taller than the board and the board is inset within it.
+                Rectangle viewport = viewport();
+                int row = geometry.rowAt(e.getY() - viewport.y, viewport.height);
+                int col = geometry.columnAt(e.getX() - viewport.x, viewport.width);
                 if (row != CellGeometry.NO_CELL && col != CellGeometry.NO_CELL) {
                     listener.cellPressed(row, col);
                 }
@@ -110,14 +116,42 @@ public final class BoardView extends JPanel {
         }
         renderInto(generation);
 
+        Rectangle viewport = viewport();
         Graphics2D g2 = (Graphics2D) g.create();
         try {
             g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                     RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-            g2.drawImage(image, 0, 0, getWidth(), getHeight(), null);
+            g2.drawImage(image, viewport.x, viewport.y, viewport.width, viewport.height, null);
+            // Outline the board itself rather than the component, so the frame hugs the
+            // board at any window size instead of floating out at the component edges.
+            g2.setColor(Theme.BORDER);
+            g2.drawRect(viewport.x, viewport.y, viewport.width - 1, viewport.height - 1);
         } finally {
             g2.dispose();
         }
+    }
+
+    /**
+     * The rectangle the board is drawn into: the largest area with the board's own aspect
+     * ratio that fits the component, centred, with any leftover space left as margin.
+     *
+     * <p>Stretching to the component bounds instead would make cells non-square whenever
+     * the window is not square &mdash; maximising the window turned a 201x201 board into a
+     * wide grid of rectangles and skewed the diagonals the simulation produces.
+     */
+    Rectangle viewport() {
+        int width = getWidth();
+        int height = getHeight();
+        if (width <= 0 || height <= 0) {
+            return new Rectangle(0, 0, 0, 0);
+        }
+        double scale = Math.min(
+                width / (double) image.getWidth(),
+                height / (double) image.getHeight());
+        int drawnWidth = Math.max(1, (int) Math.floor(image.getWidth() * scale));
+        int drawnHeight = Math.max(1, (int) Math.floor(image.getHeight() * scale));
+        return new Rectangle(
+                (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight);
     }
 
     private void renderInto(Generation generation) {

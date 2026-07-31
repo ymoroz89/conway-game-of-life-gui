@@ -117,6 +117,58 @@ class BoardViewTest {
     }
 
     @Test
+    @DisplayName("The board keeps its aspect ratio and centres itself in a non-square component")
+    void boardIsLetterboxedRatherThanStretched() {
+        // Maximising the window used to stretch a square board across the full width,
+        // making cells rectangular and skewing the diagonals the simulation produces.
+        view.setSize(400, 200);
+
+        java.awt.Rectangle viewport = view.viewport();
+
+        assertEquals(200, viewport.width, "width should be limited by the shorter axis");
+        assertEquals(200, viewport.height, "board must stay square");
+        assertEquals(100, viewport.x, "board should be centred horizontally");
+        assertEquals(0, viewport.y);
+    }
+
+    @Test
+    @DisplayName("Presses map through the letterboxed board, not the component bounds")
+    void pressMapsThroughLetterbox() {
+        view.setSize(400, 200); // board drawn as 200x200 at x=100, so 20px per cell
+
+        dispatch(MouseEvent.MOUSE_PRESSED, 100, 0);   // first cell of the board
+        dispatch(MouseEvent.MOUSE_PRESSED, 299, 199); // last cell of the board
+
+        assertEquals(2, presses.size());
+        assertEquals(0, presses.get(0)[0], "row");
+        assertEquals(0, presses.get(0)[1], "column");
+        assertEquals(9, presses.get(1)[0], "row");
+        assertEquals(9, presses.get(1)[1], "column");
+    }
+
+    @Test
+    @DisplayName("Presses in the letterbox margin report no cell")
+    void pressInMarginIsIgnored() {
+        view.setSize(400, 200); // 100px of margin either side of the board
+
+        dispatch(MouseEvent.MOUSE_PRESSED, 50, 100);  // left margin
+        dispatch(MouseEvent.MOUSE_PRESSED, 350, 100); // right margin
+
+        assertEquals(0, presses.size());
+    }
+
+    @Test
+    @DisplayName("A zero-sized component yields an empty viewport instead of failing")
+    void zeroSizedComponentIsSafe() {
+        view.setSize(0, 0);
+
+        java.awt.Rectangle viewport = view.viewport();
+
+        assertEquals(0, viewport.width);
+        assertEquals(0, viewport.height);
+    }
+
+    @Test
     @DisplayName("Painting before a generation arrives does not fail")
     void paintingWithoutAGenerationIsSafe() {
         view.setSize(40, 40);

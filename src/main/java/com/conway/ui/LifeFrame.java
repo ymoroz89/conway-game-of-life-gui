@@ -82,7 +82,7 @@ public final class LifeFrame extends JFrame {
         content.setBackground(Theme.BACKGROUND);
         content.add(buildSidebar(engine.maxPartitions(), config.defaultPartitions()),
                 BorderLayout.WEST);
-        content.add(buildBoardFrame(), BorderLayout.CENTER);
+        content.add(boardView, BorderLayout.CENTER);
         content.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(content);
         getRootPane().setBackground(Theme.BACKGROUND);
@@ -193,15 +193,6 @@ public final class LifeFrame extends JFrame {
         clearButton.setMnemonic('C');
         quitButton.setMnemonic('Q');
         return panel;
-    }
-
-    /** Wraps the board in a hairline frame so it reads as a surface rather than a void. */
-    private JComponent buildBoardFrame() {
-        JPanel frame = new JPanel(new BorderLayout());
-        frame.setBackground(Theme.BACKGROUND);
-        frame.setBorder(BorderFactory.createLineBorder(Theme.BORDER));
-        frame.add(boardView, BorderLayout.CENTER);
-        return frame;
     }
 
     private JComponent buildStatusBar() {

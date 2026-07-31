@@ -19,7 +19,8 @@ toggle it, including while the simulation is running.
 
 | Control | Effect |
 | --- | --- |
-| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine |
+| Board size | Board edge in cells: 200, 400 or 800. Changing it restarts the simulation on a fresh board, and is only available while stopped |
+| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine, and re-derived whenever the board size changes |
 | Start / Stop | Run continuously, or pause |
 | Next generation | Advance exactly one generation |
 | Clear | Empty the board and reset the counter |
@@ -33,7 +34,7 @@ Every setting is a system property; the defaults are shown.
 
 | Property | Default | Meaning |
 | --- | --- | --- |
-| `conway.gridSize` | `201` | Board width and height in cells |
+| `conway.gridSize` | `201` | Board width and height in cells; also the size selected on startup. A value that is not one of the presets is added to the board-size control rather than replaced |
 | `conway.boardSizePx` | `1000` | Target board size in pixels; cell size is derived |
 | `conway.targetFps` | `60` | Repaint rate, independent of the simulation rate |
 | `conway.maxPartitions` | `min(gridSize, 2 × cores)` | Upper bound for the partition control |

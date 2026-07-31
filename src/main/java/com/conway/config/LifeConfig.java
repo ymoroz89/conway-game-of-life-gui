@@ -23,6 +23,7 @@ public final class LifeConfig {
     private static final int DEFAULT_TARGET_FPS = 60;
 
     private final int gridSize;
+    private final int targetBoardSizePx;
     private final int cellSizePx;
     private final int targetFps;
     private final int maxPartitions;
@@ -31,6 +32,7 @@ public final class LifeConfig {
     private LifeConfig(int gridSize, int boardSizePx, int targetFps,
                        int maxPartitions, int defaultPartitions) {
         this.gridSize = gridSize;
+        this.targetBoardSizePx = boardSizePx;
         this.cellSizePx = Math.max(1, boardSizePx / gridSize);
         this.targetFps = targetFps;
         this.maxPartitions = maxPartitions;
@@ -74,6 +76,19 @@ public final class LifeConfig {
     /** Edge length of a single cell in pixels, never less than one. */
     public int cellSizePx() {
         return cellSizePx;
+    }
+
+    /**
+     * Cell size for a board of {@code gridSize} cells, so the board can be resized at
+     * runtime without rebuilding the configuration.
+     *
+     * @throws IllegalArgumentException if {@code gridSize} is not positive
+     */
+    public int cellSizePxFor(int gridSize) {
+        if (gridSize <= 0) {
+            throw new IllegalArgumentException("gridSize must be positive but was " + gridSize);
+        }
+        return Math.max(1, targetBoardSizePx / gridSize);
     }
 
     /** Board edge length in pixels. */

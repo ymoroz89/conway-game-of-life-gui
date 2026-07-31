@@ -5,6 +5,7 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -17,6 +18,7 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JSpinner;
+import javax.swing.SpinnerListModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
@@ -24,9 +26,12 @@ import javax.swing.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.conway.config.BoardSizeOption;
 import com.conway.config.LifeConfig;
 import com.conway.engine.EngineListener;
+import com.conway.engine.PartitionPlanner;
 import com.conway.engine.SimulationEngine;
+import com.conway.engine.SimulationSeeder;
 import com.conway.engine.SimulationStats;
 import com.conway.model.Generation;
 
@@ -50,10 +55,16 @@ public final class LifeFrame extends JFrame {
     private static final int CONTROL_HEIGHT = 34;
     private static final int GAP = 10;
 
-    private final SimulationEngine engine;
-    private final BoardView boardView;
+    private final LifeConfig config;
     private final Timer renderTimer;
 
+    // Rebuilt when the board size changes: the engine's grid and the view's backing
+    // image are both fixed at construction, so a new size means new instances.
+    private SimulationEngine engine;
+    private BoardView boardView;
+    private int gridSize;
+
+    private final JSpinner boardSpinner;
     private final JSpinner partitionSpinner;
     private final FlatButton startButton = new FlatButton("Start", FlatButton.Variant.PRIMARY);
     private final FlatButton stopButton = new FlatButton("Stop", FlatButton.Variant.SECONDARY);
@@ -70,12 +81,16 @@ public final class LifeFrame extends JFrame {
     public LifeFrame(LifeConfig config, SimulationEngine engine) {
         super("Game of Life by Conway");
         this.engine = Objects.requireNonNull(engine, "engine");
-        Objects.requireNonNull(config, "config");
+        this.config = Objects.requireNonNull(config, "config");
+        this.gridSize = config.gridSize();
 
-        this.boardView = new BoardView(
-                config.gridSize(), config.gridSize(), config.cellSizePx(), engine::toggleCell);
+        this.boardView = newBoardView();
         this.partitionSpinner = new JSpinner(new SpinnerNumberModel(
                 config.defaultPartitions(), 1, engine.maxPartitions(), 1));
+
+        List<BoardSizeOption> boardSizes = BoardSizeOption.options(gridSize);
+        this.boardSpinner = new JSpinner(new SpinnerListModel(boardSizes));
+        this.boardSpinner.setValue(BoardSizeOption.find(boardSizes, gridSize));
 
         JPanel content = new JPanel(new BorderLayout(GAP, 0));
         content.setBorder(Theme.padding(GAP, GAP, 0, GAP));
@@ -88,18 +103,7 @@ public final class LifeFrame extends JFrame {
         getRootPane().setBackground(Theme.BACKGROUND);
 
         wireActions();
-
-        engine.addListener(new EngineListener() {
-            @Override
-            public void onStateChanged(SimulationEngine.State state) {
-                SwingUtilities.invokeLater(() -> applyState(state));
-            }
-
-            @Override
-            public void onError(Throwable error) {
-                SwingUtilities.invokeLater(() -> showError(error));
-            }
-        });
+        attachListener(engine);
 
         // Rendering is driven at a fixed rate, independent of how fast generations
         // are produced. Previously every generation queued a repaint, so throughput
@@ -129,6 +133,73 @@ public final class LifeFrame extends JFrame {
         renderTimer.start();
     }
 
+    private BoardView newBoardView() {
+        return new BoardView(gridSize, gridSize, config.cellSizePxFor(gridSize),
+                (row, col) -> engine.toggleCell(row, col));
+    }
+
+    private void attachListener(SimulationEngine target) {
+        target.addListener(new EngineListener() {
+            @Override
+            public void onStateChanged(SimulationEngine.State state) {
+                SwingUtilities.invokeLater(() -> applyState(state));
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                SwingUtilities.invokeLater(() -> showError(error));
+            }
+        });
+    }
+
+    /**
+     * Replaces the board with one of {@code cells} squared, discarding the current
+     * simulation.
+     *
+     * <p>Both the engine's grid and the view's backing image are fixed at construction, so
+     * this builds new instances and swaps them in rather than resizing in place. The old
+     * engine is closed first, which stops its thread and releases its worker pool; leaving
+     * it running would leak a thread and a pool per size change.
+     *
+     * <p>Runs on the event dispatch thread. The control that triggers it is disabled while
+     * the simulation is running, so this never races a live run.
+     */
+    private void applyBoardSize(int cells) {
+        if (cells == gridSize) {
+            return;
+        }
+        LOG.info("Board size changing from {} to {}", gridSize, cells);
+
+        renderTimer.stop();
+        engine.close();
+
+        gridSize = cells;
+        int maxPartitions = Math.min(config.maxPartitions(), cells);
+        engine = new SimulationEngine(cells, cells, maxPartitions);
+        // Assigned before the spinner model is replaced below, so the change event that
+        // fires reaches the new engine rather than the closed one.
+        engine.setPartitions(PartitionPlanner.recommend(cells, maxPartitions));
+        attachListener(engine);
+        SimulationSeeder.seedBoard(engine, cells);
+
+        BoardView replacement = newBoardView();
+        getContentPane().remove(boardView);
+        getContentPane().add(replacement, BorderLayout.CENTER);
+        boardView = replacement;
+
+        partitionSpinner.setModel(new SpinnerNumberModel(
+                PartitionPlanner.recommend(cells, maxPartitions), 1, maxPartitions, 1));
+        Theme.styleSpinner(partitionSpinner);
+
+        applyState(engine.state());
+        refresh();
+        // Deliberately no pack(): the window keeps whatever size the user gave it, and the
+        // board letterboxes into the space available.
+        getContentPane().revalidate();
+        getContentPane().repaint();
+        renderTimer.start();
+    }
+
     /**
      * The control column. A vertical {@link BoxLayout} with pinned component heights,
      * rather than a {@code GridLayout}, so a button stays button-sized instead of being
@@ -155,6 +226,25 @@ public final class LifeFrame extends JFrame {
         panel.add(Box.createVerticalStrut(18));
         panel.add(Theme.divider());
         panel.add(Box.createVerticalStrut(16));
+
+        JLabel boardCaption = Theme.caption("Board size");
+        boardCaption.setAlignmentX(LEFT_ALIGNMENT);
+        String boardTooltip = "<html>Board edge in cells.<br>"
+                + "Changing it restarts the simulation on a fresh board.</html>";
+        boardCaption.setToolTipText(boardTooltip);
+        boardSpinner.setToolTipText(boardTooltip);
+        panel.add(boardCaption);
+        panel.add(Box.createVerticalStrut(6));
+
+        Theme.styleSpinner(boardSpinner);
+        // The list is closed, so free-text entry could only produce an invalid value.
+        if (boardSpinner.getEditor() instanceof JSpinner.DefaultEditor editor) {
+            editor.getTextField().setEditable(false);
+        }
+        Theme.fixHeight(boardSpinner, 30);
+        panel.add(boardSpinner);
+
+        panel.add(Box.createVerticalStrut(14));
 
         JLabel partitionCaption = Theme.caption("Parallel partitions");
         partitionCaption.setAlignmentX(LEFT_ALIGNMENT);
@@ -239,6 +329,8 @@ public final class LifeFrame extends JFrame {
         // A spinner is self-validating, so the parse-and-warn dialog that used to
         // guard a free-text field is gone along with the invalid states it allowed.
         partitionSpinner.addChangeListener(e -> engine.setPartitions((Integer) partitionSpinner.getValue()));
+        boardSpinner.addChangeListener(
+                e -> applyBoardSize(((BoardSizeOption) boardSpinner.getValue()).cells()));
 
         startButton.addActionListener(e -> {
             LOG.info("Start requested");
@@ -285,6 +377,8 @@ public final class LifeFrame extends JFrame {
         stepButton.setEnabled(!running);
         clearButton.setEnabled(!running);
         partitionSpinner.setEnabled(!running);
+        // Resizing discards the simulation, so it is only offered while stopped.
+        boardSpinner.setEnabled(!running);
 
         stateValue.setText(running ? "Running" : "Idle");
         stateValue.setForeground(running ? Theme.ACCENT : Theme.TEXT_MUTED);

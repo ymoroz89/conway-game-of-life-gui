@@ -26,6 +26,9 @@ public final class Main {
         LifeConfig config = LifeConfig.fromSystemProperties();
         SimulationEngine engine = new SimulationEngine(
                 config.gridSize(), config.gridSize(), config.maxPartitions());
+        // The engine starts single-threaded; adopt the count chosen for this board and
+        // machine before the first generation is computed.
+        engine.setPartitions(config.defaultPartitions());
 
         SimulationSeeder.seedBoard(engine, config.gridSize());
 

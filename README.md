@@ -19,13 +19,13 @@ toggle it, including while the simulation is running.
 
 | Control | Effect |
 | --- | --- |
-| Parallel partitions | Number of row bands each generation is split across |
+| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine |
 | Start / Stop | Run continuously, or pause |
 | Next generation | Advance exactly one generation |
 | Clear | Empty the board and reset the counter |
 
-Cells are white while alive, red once they have died, and grey where nothing has
-ever lived.
+Live cells are mint, cells that have died fade to plum, and cells where nothing has
+ever lived stay near-black.
 
 ## Configuration
 
@@ -37,6 +37,8 @@ Every setting is a system property; the defaults are shown.
 | `conway.boardSizePx` | `1000` | Target board size in pixels; cell size is derived |
 | `conway.targetFps` | `60` | Repaint rate, independent of the simulation rate |
 | `conway.maxPartitions` | `min(gridSize, 2 × cores)` | Upper bound for the partition control |
+| `conway.partitions` | chosen per board and machine | Partition count to start with; overrides the recommendation |
+| `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the recommendation |
 | `conway.log.dir` | `logs` | Log directory |
 | `conway.log.level` | `INFO` | Root log level |
 
@@ -109,6 +111,37 @@ worse.** A single generation on this board takes roughly 80 µs, which is small 
 that task dispatch and the join barrier dominate. The simulation is already about 200×
 faster than the 60 fps display, so on the default board the threading has no effect on
 what you see; decoupling rendering from the simulation is what matters.
+
+### How the default partition count is chosen
+
+Parallelism pays off as a function of the *board*, not the core count. Speedup over a
+single partition, same machine and harness:
+
+| Board | 1 | 2 | 4 | 8 | 16 | 20 | Best |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 201 | 1.00× | 1.13× | **1.15×** | 1.11× | 1.08× | 1.03× | 4 |
+| 401 | 1.00× | 1.66× | 2.23× | **2.30×** | 2.27× | 2.17× | 8 |
+| 801 | 1.00× | 1.80× | 3.13× | 3.07× | **3.53×** | 3.52× | 16 |
+| 1601 | 1.00× | 1.86× | 3.39× | 3.95× | 4.92× | **5.10×** | 20 |
+
+At every size the fastest result lands at roughly **fifty rows per band**, and the
+largest board is still improving when it hits the cap. That invariant is the rule
+[`PartitionPlanner`](src/main/java/com/conway/engine/PartitionPlanner.java) implements:
+`clamp(1, rows / 50, maxPartitions)`. It reproduces the measured optimum at all four
+sizes, and it keeps small boards single-threaded instead of paying dispatch cost for
+work that does not exist.
+
+Two consequences worth knowing:
+
+- Defaulting to `availableProcessors()` would be **slower** than the chosen value on the
+  default board — 10 partitions sits past the peak, on the declining side of the curve.
+- The cap deliberately allows more bands than cores. These are asymmetric cores
+  (6 performance + 4 efficiency); since a generation ends at a barrier, an efficiency
+  core given an equal share delays everyone, and smaller bands let the faster cores
+  absorb proportionally more.
+
+The constant was calibrated on one machine and one JDK. Retune it for a deployment that
+cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partitions=N`.
 
 Treat these figures as indicative. This is a simple harness, not
 [JMH](https://openjdk.org/projects/code-tools/jmh/) — use JMH before drawing any

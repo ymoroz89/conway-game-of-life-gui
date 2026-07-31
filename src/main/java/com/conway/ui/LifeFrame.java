@@ -74,13 +74,14 @@ public final class LifeFrame extends JFrame {
 
         this.boardView = new BoardView(
                 config.gridSize(), config.gridSize(), config.cellSizePx(), engine::toggleCell);
-        this.partitionSpinner = new JSpinner(
-                new SpinnerNumberModel(1, 1, engine.maxPartitions(), 1));
+        this.partitionSpinner = new JSpinner(new SpinnerNumberModel(
+                config.defaultPartitions(), 1, engine.maxPartitions(), 1));
 
         JPanel content = new JPanel(new BorderLayout(GAP, 0));
         content.setBorder(Theme.padding(GAP, GAP, 0, GAP));
         content.setBackground(Theme.BACKGROUND);
-        content.add(buildSidebar(engine.maxPartitions()), BorderLayout.WEST);
+        content.add(buildSidebar(engine.maxPartitions(), config.defaultPartitions()),
+                BorderLayout.WEST);
         content.add(buildBoardFrame(), BorderLayout.CENTER);
         content.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(content);
@@ -133,7 +134,7 @@ public final class LifeFrame extends JFrame {
      * rather than a {@code GridLayout}, so a button stays button-sized instead of being
      * stretched to an equal share of the column.
      */
-    private JPanel buildSidebar(int maxPartitions) {
+    private JPanel buildSidebar(int maxPartitions, int defaultPartitions) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBackground(Theme.SURFACE);
@@ -157,8 +158,12 @@ public final class LifeFrame extends JFrame {
 
         JLabel partitionCaption = Theme.caption("Parallel partitions");
         partitionCaption.setAlignmentX(LEFT_ALIGNMENT);
-        partitionCaption.setToolTipText(
-                "Number of row bands each generation is split across (1 to " + maxPartitions + ")");
+        String tooltip = "<html>Number of row bands each generation is split across "
+                + "(1 to " + maxPartitions + ").<br>"
+                + "Defaults to " + defaultPartitions
+                + ", chosen for this board size and machine.</html>";
+        partitionCaption.setToolTipText(tooltip);
+        partitionSpinner.setToolTipText(tooltip);
         panel.add(partitionCaption);
         panel.add(Box.createVerticalStrut(6));
 

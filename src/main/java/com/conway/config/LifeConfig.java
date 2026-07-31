@@ -3,6 +3,8 @@ package com.conway.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.conway.engine.PartitionPlanner;
+
 /**
  * Externalised application settings.
  *
@@ -24,12 +26,15 @@ public final class LifeConfig {
     private final int cellSizePx;
     private final int targetFps;
     private final int maxPartitions;
+    private final int defaultPartitions;
 
-    private LifeConfig(int gridSize, int boardSizePx, int targetFps, int maxPartitions) {
+    private LifeConfig(int gridSize, int boardSizePx, int targetFps,
+                       int maxPartitions, int defaultPartitions) {
         this.gridSize = gridSize;
         this.cellSizePx = Math.max(1, boardSizePx / gridSize);
         this.targetFps = targetFps;
         this.maxPartitions = maxPartitions;
+        this.defaultPartitions = defaultPartitions;
     }
 
     /** Reads configuration from system properties, falling back to defaults. */
@@ -42,12 +47,22 @@ public final class LifeConfig {
         // small multiple of the core count adds scheduling overhead without adding
         // parallelism. Oversubscribing by 2x still lets the user observe the effect
         // of raising the count past the hardware limit.
-        int hardwareCap = Math.max(2, Runtime.getRuntime().availableProcessors() * 2);
-        int maxPartitions = intProperty("maxPartitions", Math.min(gridSize, hardwareCap), 1, gridSize);
+        int maxPartitions =
+                intProperty("maxPartitions", PartitionPlanner.hardwareCap(gridSize), 1, gridSize);
 
-        LifeConfig config = new LifeConfig(gridSize, boardSizePx, targetFps, maxPartitions);
-        LOG.info("Configuration: grid {}x{}, cell {}px, target {} fps, max partitions {}",
-                gridSize, gridSize, config.cellSizePx, targetFps, maxPartitions);
+        // Chosen from the board size and the machine rather than hard-coded to 1. The
+        // rule and the measurements behind it are documented on PartitionPlanner.
+        int minRowsPerPartition = intProperty("minRowsPerPartition",
+                PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION, 1, gridSize);
+        int recommended = PartitionPlanner.recommend(gridSize, maxPartitions, minRowsPerPartition);
+        int defaultPartitions = intProperty("partitions", recommended, 1, maxPartitions);
+
+        LifeConfig config = new LifeConfig(
+                gridSize, boardSizePx, targetFps, maxPartitions, defaultPartitions);
+        LOG.info("Configuration: grid {}x{}, cell {}px, target {} fps, "
+                        + "partitions {} of at most {} ({} cores available)",
+                gridSize, gridSize, config.cellSizePx, targetFps,
+                defaultPartitions, maxPartitions, Runtime.getRuntime().availableProcessors());
         return config;
     }
 
@@ -74,6 +89,15 @@ public final class LifeConfig {
     /** Upper bound the UI allows for the number of parallel row bands. */
     public int maxPartitions() {
         return maxPartitions;
+    }
+
+    /**
+     * Partition count the application starts with, sized for this board on this machine.
+     *
+     * @see com.conway.engine.PartitionPlanner
+     */
+    public int defaultPartitions() {
+        return defaultPartitions;
     }
 
     private static int intProperty(String name, int defaultValue, int min, int max) {

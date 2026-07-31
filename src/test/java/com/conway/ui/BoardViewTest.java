@@ -83,7 +83,7 @@ class BoardViewTest {
     }
 
     @Test
-    @DisplayName("Cells render as white when alive, red once dead and grey when never populated")
+    @DisplayName("Alive, died-here and never-populated cells each render in their theme colour")
     void rendersCellStates() {
         boolean[] alive = new boolean[ROWS * COLUMNS];
         boolean[] everAlive = new boolean[ROWS * COLUMNS];
@@ -104,11 +104,16 @@ class BoardViewTest {
             g.dispose();
         }
 
-        // Sample the interior of each cell, avoiding the one-pixel separator.
-        assertEquals(0xFFFFFF, rgb(target, 0, 0), "alive cell should be white");
-        assertEquals(0xFF0000, rgb(target, 1, 1), "previously alive cell should be red");
-        assertEquals(0x808080, rgb(target, 5, 5), "never populated cell should be grey");
-        assertEquals(0x000000, target.getRGB(0, 0) & 0xFFFFFF, "cell separator should be dark");
+        // Assert against the theme rather than repeating hex literals, so the palette has
+        // exactly one definition and this test cannot drift away from what is rendered.
+        assertEquals(Theme.BOARD_ALIVE, rgb(target, 0, 0), "alive cell");
+        assertEquals(Theme.BOARD_TRAIL, rgb(target, 1, 1), "cell that has died");
+        assertEquals(Theme.BOARD_EMPTY, rgb(target, 5, 5), "never populated cell");
+
+        // The separator occupies the trailing edge of each cell, so it sits at the last
+        // pixel of the first cell rather than at the origin.
+        assertEquals(Theme.BOARD_GRID,
+                target.getRGB(CELL_SIZE - 1, CELL_SIZE - 1) & 0xFFFFFF, "cell separator");
     }
 
     @Test

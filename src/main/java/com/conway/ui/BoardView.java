@@ -1,5 +1,6 @@
 package com.conway.ui;
 
+import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
@@ -31,14 +32,12 @@ import com.conway.model.Generation;
 @SuppressWarnings("serial") // Swing components inherit Serializable; this application never serialises them.
 public final class BoardView extends JPanel {
 
-    /** Alive. */
-    private static final int COLOR_ALIVE = 0xFFFFFF;
-    /** Dead, but alive at some earlier point. */
-    private static final int COLOR_DEAD = 0xFF0000;
-    /** Never populated. */
-    private static final int COLOR_EMPTY = 0x808080;
-    /** Separator between cells. */
-    private static final int COLOR_GRID = 0x000000;
+    /**
+     * Cells narrower than this are drawn solid. A separator costs one pixel per axis, so
+     * below this size it would consume more of the cell than the cell's own colour and
+     * the board reads as a grey mesh rather than as a population.
+     */
+    private static final int MIN_CELL_SIZE_FOR_GRID = 3;
 
     /** Notified when the user presses a cell. */
     @FunctionalInterface
@@ -71,6 +70,7 @@ public final class BoardView extends JPanel {
         setPreferredSize(new Dimension(image.getWidth(), image.getHeight()));
         setMinimumSize(new Dimension(columns, rows));
         setOpaque(true);
+        setBackground(new Color(Theme.BOARD_EMPTY));
 
         // MouseAdapter, so unused callbacks are genuinely absent. Overriding every
         // MouseListener method and throwing from the ones that are not needed meant
@@ -126,40 +126,26 @@ public final class BoardView extends JPanel {
         boolean[] alive = generation.aliveCells();
         boolean[] everAlive = generation.everAliveCells();
         int stride = image.getWidth();
-        int inner = cellSize - 2;
 
-        // Covers any area not written below, which matters when the board is smaller
-        // than the view.
-        Arrays.fill(pixels, COLOR_GRID);
+        // One pixel of separator along the trailing edges only. The previous inset of one
+        // pixel on every side left a 4px cell with a 2x2 interior, so three quarters of
+        // the board was grid line.
+        int gap = cellSize >= MIN_CELL_SIZE_FOR_GRID ? 1 : 0;
+        int inner = cellSize - gap;
 
-        if (inner <= 0) {
-            // Cells are too small to carry a separator; draw them solid.
-            for (int row = 0; row < boardRows; row++) {
-                int cellRowBase = row * generation.width();
-                for (int col = 0; col < boardColumns; col++) {
-                    int rgb = colorOf(alive, everAlive, cellRowBase + col);
-                    int y0 = row * cellSize;
-                    int x0 = col * cellSize;
-                    for (int y = 0; y < cellSize; y++) {
-                        int offset = (y0 + y) * stride + x0;
-                        Arrays.fill(pixels, offset, offset + cellSize, rgb);
-                    }
-                }
-            }
-            return;
-        }
+        // Covers the separators and any area not written below, which matters when the
+        // board is smaller than the view.
+        Arrays.fill(pixels, Theme.BOARD_GRID);
 
         for (int row = 0; row < boardRows; row++) {
             int cellRowBase = row * generation.width();
-            int y0 = row * cellSize + 1;
+            int y0 = row * cellSize;
             for (int col = 0; col < boardColumns; col++) {
                 int rgb = colorOf(alive, everAlive, cellRowBase + col);
-                int x0 = col * cellSize + 1;
+                int x0 = col * cellSize;
                 for (int y = 0; y < inner; y++) {
                     int offset = (y0 + y) * stride + x0;
-                    for (int x = 0; x < inner; x++) {
-                        pixels[offset + x] = rgb;
-                    }
+                    Arrays.fill(pixels, offset, offset + inner, rgb);
                 }
             }
         }
@@ -167,8 +153,8 @@ public final class BoardView extends JPanel {
 
     private static int colorOf(boolean[] alive, boolean[] everAlive, int index) {
         if (alive[index]) {
-            return COLOR_ALIVE;
+            return Theme.BOARD_ALIVE;
         }
-        return everAlive[index] ? COLOR_DEAD : COLOR_EMPTY;
+        return everAlive[index] ? Theme.BOARD_TRAIL : Theme.BOARD_EMPTY;
     }
 }

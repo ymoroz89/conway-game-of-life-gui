@@ -1,9 +1,8 @@
 package com.conway.ui;
 
 import java.awt.BorderLayout;
-import java.awt.Color;
+import java.awt.Component;
 import java.awt.Dimension;
-import java.awt.GridLayout;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.Locale;
@@ -11,7 +10,8 @@ import java.util.Objects;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
-import javax.swing.JButton;
+import javax.swing.BoxLayout;
+import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -28,6 +28,7 @@ import com.conway.config.LifeConfig;
 import com.conway.engine.EngineListener;
 import com.conway.engine.SimulationEngine;
 import com.conway.engine.SimulationStats;
+import com.conway.model.Generation;
 
 /**
  * The application window: controls, board and the render loop that drives them.
@@ -45,17 +46,26 @@ public final class LifeFrame extends JFrame {
 
     private static final Logger LOG = LoggerFactory.getLogger(LifeFrame.class);
 
+    private static final int SIDEBAR_WIDTH = 208;
+    private static final int CONTROL_HEIGHT = 34;
+    private static final int GAP = 10;
+
     private final SimulationEngine engine;
     private final BoardView boardView;
     private final Timer renderTimer;
 
     private final JSpinner partitionSpinner;
-    private final JButton startButton = new JButton("Start");
-    private final JButton stopButton = new JButton("Stop");
-    private final JButton stepButton = new JButton("Next generation");
-    private final JButton clearButton = new JButton("Clear");
-    private final JButton quitButton = new JButton("Quit");
-    private final JLabel statusLabel = new JLabel(" ");
+    private final FlatButton startButton = new FlatButton("Start", FlatButton.Variant.PRIMARY);
+    private final FlatButton stopButton = new FlatButton("Stop", FlatButton.Variant.SECONDARY);
+    private final FlatButton stepButton = new FlatButton("Next generation", FlatButton.Variant.SECONDARY);
+    private final FlatButton clearButton = new FlatButton("Clear", FlatButton.Variant.SECONDARY);
+    private final FlatButton quitButton = new FlatButton("Quit", FlatButton.Variant.DANGER);
+
+    private final JLabel generationValue = Theme.value("0");
+    private final JLabel speedValue = Theme.value("0.0");
+    private final JLabel populationValue = Theme.value("0");
+    private final JLabel partitionsValue = Theme.value("1");
+    private final JLabel stateValue = Theme.value("Idle");
 
     public LifeFrame(LifeConfig config, SimulationEngine engine) {
         super("Game of Life by Conway");
@@ -67,13 +77,14 @@ public final class LifeFrame extends JFrame {
         this.partitionSpinner = new JSpinner(
                 new SpinnerNumberModel(1, 1, engine.maxPartitions(), 1));
 
-        JPanel content = new JPanel(new BorderLayout(8, 8));
-        content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        content.setBackground(Color.LIGHT_GRAY);
-        content.add(buildControlPanel(engine.maxPartitions()), BorderLayout.WEST);
-        content.add(boardView, BorderLayout.CENTER);
-        content.add(statusLabel, BorderLayout.SOUTH);
+        JPanel content = new JPanel(new BorderLayout(GAP, 0));
+        content.setBorder(Theme.padding(GAP, GAP, 0, GAP));
+        content.setBackground(Theme.BACKGROUND);
+        content.add(buildSidebar(engine.maxPartitions()), BorderLayout.WEST);
+        content.add(buildBoardFrame(), BorderLayout.CENTER);
+        content.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(content);
+        getRootPane().setBackground(Theme.BACKGROUND);
 
         wireActions();
 
@@ -109,6 +120,7 @@ public final class LifeFrame extends JFrame {
         pack();
         setMinimumSize(new Dimension(getWidth() / 2, getHeight() / 2));
         setLocationRelativeTo(null);
+        getRootPane().setDefaultButton(startButton);
     }
 
     /** Starts the render loop. Call after the frame is visible. */
@@ -116,21 +128,59 @@ public final class LifeFrame extends JFrame {
         renderTimer.start();
     }
 
-    private JPanel buildControlPanel(int maxPartitions) {
-        JLabel partitionLabel = new JLabel("Parallel partitions");
-        partitionLabel.setToolTipText(
-                "Number of row bands each generation is split across (1 to " + maxPartitions + ")");
+    /**
+     * The control column. A vertical {@link BoxLayout} with pinned component heights,
+     * rather than a {@code GridLayout}, so a button stays button-sized instead of being
+     * stretched to an equal share of the column.
+     */
+    private JPanel buildSidebar(int maxPartitions) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBackground(Theme.SURFACE);
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Theme.BORDER),
+                Theme.padding(16, 16, 16, 16)));
+        panel.setPreferredSize(new Dimension(SIDEBAR_WIDTH, 0));
+        panel.setMaximumSize(new Dimension(SIDEBAR_WIDTH, Integer.MAX_VALUE));
 
-        JPanel panel = new JPanel(new GridLayout(0, 1, 0, 6));
-        panel.setBackground(Color.LIGHT_GRAY);
-        panel.add(partitionLabel);
+        JLabel heading = Theme.title("Game of Life");
+        JLabel subheading = Theme.caption("Conway");
+        heading.setAlignmentX(LEFT_ALIGNMENT);
+        subheading.setAlignmentX(LEFT_ALIGNMENT);
+
+        panel.add(heading);
+        panel.add(Box.createVerticalStrut(2));
+        panel.add(subheading);
+        panel.add(Box.createVerticalStrut(18));
+        panel.add(Theme.divider());
+        panel.add(Box.createVerticalStrut(16));
+
+        JLabel partitionCaption = Theme.caption("Parallel partitions");
+        partitionCaption.setAlignmentX(LEFT_ALIGNMENT);
+        partitionCaption.setToolTipText(
+                "Number of row bands each generation is split across (1 to " + maxPartitions + ")");
+        panel.add(partitionCaption);
+        panel.add(Box.createVerticalStrut(6));
+
+        Theme.styleSpinner(partitionSpinner);
+        Theme.fixHeight(partitionSpinner, 30);
         panel.add(partitionSpinner);
-        panel.add(startButton);
-        panel.add(stopButton);
-        panel.add(stepButton);
-        panel.add(clearButton);
-        panel.add(quitButton);
+
+        panel.add(Box.createVerticalStrut(18));
+        panel.add(Theme.divider());
+        panel.add(Box.createVerticalStrut(16));
+
+        for (FlatButton button : new FlatButton[] {startButton, stopButton, stepButton, clearButton}) {
+            Theme.fixHeight(button, CONTROL_HEIGHT);
+            panel.add(button);
+            panel.add(Box.createVerticalStrut(8));
+        }
+
         panel.add(Box.createVerticalGlue());
+        panel.add(Theme.divider());
+        panel.add(Box.createVerticalStrut(12));
+        Theme.fixHeight(quitButton, CONTROL_HEIGHT);
+        panel.add(quitButton);
 
         startButton.setMnemonic('S');
         stopButton.setMnemonic('T');
@@ -138,6 +188,55 @@ public final class LifeFrame extends JFrame {
         clearButton.setMnemonic('C');
         quitButton.setMnemonic('Q');
         return panel;
+    }
+
+    /** Wraps the board in a hairline frame so it reads as a surface rather than a void. */
+    private JComponent buildBoardFrame() {
+        JPanel frame = new JPanel(new BorderLayout());
+        frame.setBackground(Theme.BACKGROUND);
+        frame.setBorder(BorderFactory.createLineBorder(Theme.BORDER));
+        frame.add(boardView, BorderLayout.CENTER);
+        return frame;
+    }
+
+    private JComponent buildStatusBar() {
+        JPanel bar = new JPanel();
+        bar.setLayout(new BoxLayout(bar, BoxLayout.X_AXIS));
+        bar.setBackground(Theme.BACKGROUND);
+        bar.setBorder(Theme.padding(12, 2, 12, 2));
+
+        addStatusSegment(bar, "Generation", generationValue, false);
+        addStatusSegment(bar, "Gen/sec", speedValue, true);
+        addStatusSegment(bar, "Population", populationValue, true);
+        addStatusSegment(bar, "Partitions", partitionsValue, true);
+        bar.add(Box.createHorizontalGlue());
+        addStatusSegment(bar, "State", stateValue, false);
+        return bar;
+    }
+
+    /** A caption above its value, optionally preceded by a vertical rule. */
+    private static void addStatusSegment(JPanel bar, String caption, JLabel value, boolean leadingRule) {
+        if (leadingRule) {
+            bar.add(Box.createHorizontalStrut(16));
+            JPanel rule = new JPanel();
+            rule.setBackground(Theme.BORDER);
+            rule.setPreferredSize(new Dimension(1, 22));
+            rule.setMaximumSize(new Dimension(1, 22));
+            bar.add(rule);
+            bar.add(Box.createHorizontalStrut(16));
+        }
+
+        JPanel segment = new JPanel();
+        segment.setLayout(new BoxLayout(segment, BoxLayout.Y_AXIS));
+        segment.setBackground(Theme.BACKGROUND);
+
+        JLabel captionLabel = Theme.caption(caption);
+        captionLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        value.setAlignmentX(Component.LEFT_ALIGNMENT);
+        segment.add(captionLabel);
+        segment.add(Box.createVerticalStrut(3));
+        segment.add(value);
+        bar.add(segment);
     }
 
     private void wireActions() {
@@ -171,12 +270,16 @@ public final class LifeFrame extends JFrame {
 
     /** Pulls the latest snapshot and statistics. Runs on the event dispatch thread. */
     private void refresh() {
-        boardView.setGeneration(engine.currentGeneration());
+        Generation generation = engine.currentGeneration();
+        boardView.setGeneration(generation);
 
         SimulationStats stats = engine.stats();
-        statusLabel.setText(String.format(Locale.ROOT,
-                "Generation %,d   |   %,.1f generations/s   |   %d partition(s)",
-                stats.generation(), stats.generationsPerSecond(), stats.partitions()));
+        generationValue.setText(String.format(Locale.ROOT, "%,d", stats.generation()));
+        speedValue.setText(String.format(Locale.ROOT, "%,.1f", stats.generationsPerSecond()));
+        partitionsValue.setText(Integer.toString(stats.partitions()));
+        populationValue.setText(generation == null
+                ? "0"
+                : String.format(Locale.ROOT, "%,d", generation.population()));
     }
 
     private void applyState(SimulationEngine.State state) {
@@ -186,6 +289,9 @@ public final class LifeFrame extends JFrame {
         stepButton.setEnabled(!running);
         clearButton.setEnabled(!running);
         partitionSpinner.setEnabled(!running);
+
+        stateValue.setText(running ? "Running" : "Idle");
+        stateValue.setForeground(running ? Theme.ACCENT : Theme.TEXT_MUTED);
         // Editing stays available while running: cell toggles are queued to the
         // simulation thread rather than written directly to shared state.
     }

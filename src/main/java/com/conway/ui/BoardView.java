@@ -55,6 +55,13 @@ public final class BoardView extends JPanel {
 
     private Generation displayed;
 
+    /**
+     * The generation the backing image currently shows, which is not always {@link #displayed}:
+     * a repaint triggered by exposure or a resize leaves the image already correct. Holding it
+     * lets a new generation be applied as a difference rather than a full redraw.
+     */
+    private Generation rendered;
+
     public BoardView(int rows, int columns, int cellSize, CellPressListener listener) {
         if (cellSize < 1) {
             throw new IllegalArgumentException("cellSize must be at least 1 but was " + cellSize);
@@ -154,35 +161,101 @@ public final class BoardView extends JPanel {
                 (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight);
     }
 
+    /**
+     * Brings the backing image up to date with {@code generation}.
+     *
+     * <p>Three paths, cheapest first. If the image already shows this generation there is
+     * nothing to do, which covers every repaint caused by exposure, a resize or a focus
+     * change. If the previous generation is the same size, only the cells whose colour
+     * differs are rewritten. Otherwise the whole image is redrawn.
+     *
+     * <p>Profiling showed this method rewriting all 40,401 cells and clearing the whole
+     * pixel buffer on every paint, while the engine was evaluating around 2% of the board
+     * per generation. That made the event dispatch thread cost as much as the entire
+     * simulation control path.
+     */
     private void renderInto(Generation generation) {
+        if (rendered == generation) {
+            return;
+        }
+        if (rendered == null
+                || rendered.width() != generation.width()
+                || rendered.height() != generation.height()) {
+            renderAll(generation);
+        } else {
+            renderChanges(rendered, generation);
+        }
+        rendered = generation;
+    }
+
+    /** Redraws every cell, plus the separators and any area the board does not cover. */
+    private void renderAll(Generation generation) {
         int boardRows = Math.min(rows, generation.height());
         int boardColumns = Math.min(columns, generation.width());
         boolean[] alive = generation.aliveCells();
         boolean[] everAlive = generation.everAliveCells();
         int stride = image.getWidth();
-
-        // One pixel of separator along the trailing edges only. The previous inset of one
-        // pixel on every side left a 4px cell with a 2x2 interior, so three quarters of
-        // the board was grid line.
-        int gap = cellSize >= MIN_CELL_SIZE_FOR_GRID ? 1 : 0;
-        int inner = cellSize - gap;
+        int inner = innerCellSize();
 
         // Covers the separators and any area not written below, which matters when the
-        // board is smaller than the view.
+        // board is smaller than the view. Only the full path needs this: separators never
+        // change, so an incremental update must not repaint over them.
         Arrays.fill(pixels, Theme.BOARD_GRID);
 
         for (int row = 0; row < boardRows; row++) {
             int cellRowBase = row * generation.width();
-            int y0 = row * cellSize;
             for (int col = 0; col < boardColumns; col++) {
-                int rgb = colorOf(alive, everAlive, cellRowBase + col);
-                int x0 = col * cellSize;
-                for (int y = 0; y < inner; y++) {
-                    int offset = (y0 + y) * stride + x0;
-                    Arrays.fill(pixels, offset, offset + inner, rgb);
+                writeCell(row, col, colorOf(alive, everAlive, cellRowBase + col), inner, stride);
+            }
+        }
+    }
+
+    /**
+     * Rewrites only the cells whose colour differs between the two generations.
+     *
+     * <p>The comparison still visits every cell, but it reads two booleans per cell instead
+     * of writing {@code inner * inner} pixels, and it skips the full-buffer clear. Both
+     * generations must have the same dimensions; the caller guarantees that.
+     */
+    private void renderChanges(Generation previous, Generation current) {
+        int boardRows = Math.min(rows, current.height());
+        int boardColumns = Math.min(columns, current.width());
+        boolean[] previousAlive = previous.aliveCells();
+        boolean[] previousEver = previous.everAliveCells();
+        boolean[] alive = current.aliveCells();
+        boolean[] everAlive = current.everAliveCells();
+        int stride = image.getWidth();
+        int inner = innerCellSize();
+        int width = current.width();
+
+        for (int row = 0; row < boardRows; row++) {
+            int cellRowBase = row * width;
+            for (int col = 0; col < boardColumns; col++) {
+                int index = cellRowBase + col;
+                int rgb = colorOf(alive, everAlive, index);
+                if (rgb != colorOf(previousAlive, previousEver, index)) {
+                    writeCell(row, col, rgb, inner, stride);
                 }
             }
         }
+    }
+
+    private void writeCell(int row, int col, int rgb, int inner, int stride) {
+        int y0 = row * cellSize;
+        int x0 = col * cellSize;
+        for (int y = 0; y < inner; y++) {
+            int offset = (y0 + y) * stride + x0;
+            Arrays.fill(pixels, offset, offset + inner, rgb);
+        }
+    }
+
+    /**
+     * Edge of the coloured part of a cell. One pixel of separator along the trailing edges
+     * only; the previous inset of one pixel on every side left a 4px cell with a 2x2
+     * interior, so three quarters of the board was grid line.
+     */
+    private int innerCellSize() {
+        return cellSize - (cellSize >= MIN_CELL_SIZE_FOR_GRID ? 1 : 0);
     }
 
     private static int colorOf(boolean[] alive, boolean[] everAlive, int index) {

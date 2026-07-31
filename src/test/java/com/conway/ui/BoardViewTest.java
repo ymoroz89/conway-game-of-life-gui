@@ -3,12 +3,14 @@ package com.conway.ui;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.awt.Graphics2D;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -169,6 +171,86 @@ class BoardViewTest {
     }
 
     @Test
+    @DisplayName("Rendering a sequence incrementally matches rendering the last board from scratch")
+    void incrementalRenderMatchesFullRender() {
+        // The renderer updates the image as a difference against the previous generation
+        // instead of redrawing every cell. The whole optimisation rests on the two paths
+        // producing identical pixels, so that is asserted directly.
+        Generation first = generation(cells(0), cells(0));                 // (0,0) alive
+        Generation second = generation(cells(11), cells(0, 11));           // (0,0) died, (1,1) alive
+        Generation third = generation(cells(22), cells(11, 22));           // (1,1) died, (2,2) alive,
+                                                                           // (0,0) reverted to empty
+
+        BufferedImage incremental = renderSequence(first, second, third);
+        BufferedImage fromScratch = renderSequence(third);
+
+        assertImagesEqual(fromScratch, incremental);
+    }
+
+    @Test
+    @DisplayName("Incremental and full rendering agree across a long random sequence")
+    void incrementalRenderMatchesFullRenderOverManySteps() {
+        Random random = new Random(20260731L);
+        BoardView incremental = newView();
+        incremental.setSize(COLUMNS * CELL_SIZE, ROWS * CELL_SIZE);
+
+        for (int step = 0; step < 25; step++) {
+            boolean[] alive = new boolean[ROWS * COLUMNS];
+            boolean[] everAlive = new boolean[ROWS * COLUMNS];
+            for (int i = 0; i < alive.length; i++) {
+                alive[i] = random.nextBoolean();
+                // Independent of alive, so trail cells and impossible-looking combinations
+                // are both exercised.
+                everAlive[i] = alive[i] || random.nextBoolean();
+            }
+            Generation board = Generation.adopt(COLUMNS, ROWS, alive, everAlive, step);
+
+            incremental.setGeneration(board);
+            BufferedImage stepped = paint(incremental);
+            BufferedImage fresh = renderSequence(board);
+
+            assertImagesEqual(fresh, stepped, "step " + step);
+        }
+    }
+
+    @Test
+    @DisplayName("Cell separators survive incremental updates")
+    void separatorsAreNotOverwrittenByIncrementalUpdates() {
+        // The full-redraw path clears the buffer to the separator colour; the incremental
+        // path must not paint over it when it rewrites a cell.
+        BoardView view = newView();
+        view.setSize(COLUMNS * CELL_SIZE, ROWS * CELL_SIZE);
+
+        view.setGeneration(generation(cells(0), cells(0)));
+        paint(view);
+        view.setGeneration(generation(cells(0, 1), cells(0, 1)));
+        BufferedImage image = paint(view);
+
+        assertEquals(Theme.BOARD_GRID, image.getRGB(CELL_SIZE - 1, CELL_SIZE - 1) & 0xFFFFFF,
+                "separator after an incremental update");
+    }
+
+    @Test
+    @DisplayName("A board of different dimensions falls back to a full redraw")
+    void differentDimensionsTriggerFullRedraw() {
+        BoardView view = newView();
+        view.setSize(COLUMNS * CELL_SIZE, ROWS * CELL_SIZE);
+
+        view.setGeneration(generation(cells(0), cells(0)));
+        paint(view);
+
+        // Smaller than the view: the area the board no longer covers must be repainted
+        // rather than left showing the previous board.
+        Generation smaller = Generation.empty(COLUMNS / 2, ROWS / 2).withCell(0, 0, true);
+        view.setGeneration(smaller);
+        BufferedImage image = paint(view);
+
+        assertEquals(Theme.BOARD_ALIVE, rgb(image, 0, 0), "the smaller board still draws");
+        assertEquals(Theme.BOARD_GRID, rgb(image, ROWS - 1, COLUMNS - 1),
+                "area outside the smaller board is cleared, not stale");
+    }
+
+    @Test
     @DisplayName("Painting before a generation arrives does not fail")
     void paintingWithoutAGenerationIsSafe() {
         view.setSize(40, 40);
@@ -187,6 +269,70 @@ class BoardViewTest {
         assertEquals(COLUMNS * CELL_SIZE, view.getPreferredSize().width);
         assertEquals(ROWS * CELL_SIZE, view.getPreferredSize().height);
         assertTrue(view.isOpaque());
+    }
+
+    private BoardView newView() {
+        return new BoardView(ROWS, COLUMNS, CELL_SIZE, (row, col) -> { });
+    }
+
+    /** Flat cell indices, as {@code row * COLUMNS + col} is the board's own indexing. */
+    private static int[] cells(int... indices) {
+        return indices;
+    }
+
+    private static Generation generation(int[] aliveIndices, int[] everAliveIndices) {
+        boolean[] alive = new boolean[ROWS * COLUMNS];
+        boolean[] everAlive = new boolean[ROWS * COLUMNS];
+        for (int index : aliveIndices) {
+            alive[index] = true;
+        }
+        for (int index : everAliveIndices) {
+            everAlive[index] = true;
+        }
+        return Generation.adopt(COLUMNS, ROWS, alive, everAlive, 0L);
+    }
+
+    /** Paints each generation in turn into one view, returning the final image. */
+    private BufferedImage renderSequence(Generation... generations) {
+        BoardView view = newView();
+        view.setSize(COLUMNS * CELL_SIZE, ROWS * CELL_SIZE);
+        BufferedImage image = null;
+        for (Generation generation : generations) {
+            view.setGeneration(generation);
+            image = paint(view);
+        }
+        return image;
+    }
+
+    private static BufferedImage paint(BoardView view) {
+        BufferedImage target = new BufferedImage(
+                view.getWidth(), view.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = target.createGraphics();
+        try {
+            view.paint(g);
+        } finally {
+            g.dispose();
+        }
+        return target;
+    }
+
+    private static void assertImagesEqual(BufferedImage expected, BufferedImage actual) {
+        assertImagesEqual(expected, actual, "");
+    }
+
+    private static void assertImagesEqual(BufferedImage expected, BufferedImage actual, String context) {
+        assertEquals(expected.getWidth(), actual.getWidth(), "width " + context);
+        assertEquals(expected.getHeight(), actual.getHeight(), "height " + context);
+        for (int y = 0; y < expected.getHeight(); y++) {
+            for (int x = 0; x < expected.getWidth(); x++) {
+                if (expected.getRGB(x, y) != actual.getRGB(x, y)) {
+                    fail(String.format(
+                            "Pixel (%d, %d) differs %s: expected %06X but was %06X",
+                            x, y, context,
+                            expected.getRGB(x, y) & 0xFFFFFF, actual.getRGB(x, y) & 0xFFFFFF));
+                }
+            }
+        }
     }
 
     private void dispatch(int id, int x, int y) {

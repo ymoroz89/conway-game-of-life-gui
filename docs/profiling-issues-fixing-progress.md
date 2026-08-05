@@ -16,7 +16,7 @@ Updated as each fix lands.
 | N1 | Two `boolean[]` allocated per generation | 🟡 P2 | ⬜ Won't fix — measured, see notes |
 | — | **Bug:** ever-alive flags erased when the board dies out | 🔴 | ✅ **Fixed** |
 | N2 | `ActiveRegion` per band per generation | 🟢 P3 | ⬜ Won't fix — negligible by bytes |
-| N5 | **Worker utilisation is 55%** — barrier dispatch plus band imbalance | 🟡 P2 | ⬜ Open — costed, not started |
+| N5 | Worker utilisation — dispatch overhead | 🟡 P2 | ◐ **Partly** — caller now computes a band, +4.5% |
 | P2-6 | Machine has substantial headroom (context only) | 🟡 P2 | ℹ️ No action |
 | P3-7..10 | Informational | 🟢 P3 | ℹ️ No action |
 | H-11..16 | Confirmed healthy | ✅ | ℹ️ No action |
@@ -506,47 +506,96 @@ the hot loop and the `Generation.adopt` signature for a tenth of a percent. Not 
 
 ---
 
-## N5 — Worker utilisation is 55% ⬜ Open
+## N5 — Worker utilisation ◐ Partly done
 
-The one substantive performance lever left. Three profiles gave three different answers about
-the per-generation barrier; this is the first that measured the right thing.
+The one substantive performance lever left after the P1 work. Three profiles gave three
+different answers about the per-generation barrier; the wall-clock one measured the right
+thing.
 
 | Profile | Said | Assessment |
 | --- | --- | --- |
 | Instrumented snapshot | Simulation thread 83% idle, "barrier is the bottleneck" | Wrong framing. That thread is a coordinator; idle is correct behaviour, and its 17.3% CPU was mostly instrumentation overhead |
 | P2-4, CPU-only JFR | Simulation thread is 1 sample in 2,595 | True, but silent on the workers — parked threads emit no CPU samples |
-| P2-4b, wall-clock | **Workers compute 55% of the time**, parked 35%, coordinating 10% | The actual headroom |
+| P2-4b, wall-clock | **Workers compute 55% of the time**, parked 35%, coordinating 10% | The real measurement |
 
-Two independent causes, and they need different remedies.
+### Correction: band imbalance was not real
 
-**Dispatch and parking.** Four bands at roughly 18,000 generations a second is about 72,000
-park/unpark cycles a second. Corroborated by allocation: **24.8% of allocation samples are AQS
-`ConditionNode`s** from the parking machinery, nearly as many as the `boolean[]` arrays at
-33.5%.
+An earlier revision of this section claimed a second cause — "the busiest band carries 49%
+more than the quietest" — inferred from per-worker sample counts of 3704 / 3356 / 2843 / 2486.
+**That inference was wrong.** In wall-clock mode every live thread is sampled each tick, so
+four workers alive throughout should show near-equal counts whatever the bands cost; the spread
+reflects the sampler, not the work.
 
-**Band imbalance.** Sample counts per worker were 3704 / 3356 / 2843 / 2486 — the busiest band
-carries **49% more** than the quietest. Bands are equal *row counts*, not equal *work*, and the
-active region is not uniformly dense. Every generation therefore waits on the slowest band, so
-part of that 35% idle is straggler wait that no amount of cheaper dispatch will remove.
+Timing each band directly says imbalance is minor:
 
-### Options, costed
+| Grid, bands | Per-band cost | Slowest / fastest |
+| --- | --- | --- |
+| 801, 4 | 214.6, 205.1, 205.5, 211.5 µs | **1.05×** |
+| 801, 16 | 60.7, 52.7, 52.9, 52.8 … | **1.17×** |
+| 201, 4 | 22.5, 18.9, 18.9, 20.0 µs | **1.19×** |
+
+Band zero is consistently the slowest, which is the `colStart == 0` border branch and row 0
+taking the bounds-checked path — real, but 5–19%, not 49%. So the idle is dispatch plus the
+serial window between generations, and finer bands would fix almost nothing.
+
+### Change: the calling thread computes a band
+
+`next` used to submit every band through `invokeAll` and block. It now dispatches all but the
+first and computes that one on the calling thread. Same degree of parallelism — the caller was
+idle before — with one fewer hand-off per generation, and the simulation thread stops being
+88% parked.
+
+A failure in band zero is wrapped in `SimulationException` to match the dispatched bands, which
+surface through `ExecutionException`; without that, the same fault would report differently
+depending on which band hit it.
+
+### Measured effect
+
+Interleaved A/B, two rounds, alternating builds:
+
+| Case | Before | After | |
+| --- | --- | --- | --- |
+| 201, 4 bands, dense | 59.2 µs | 56.9 µs | **3.9% faster** |
+| 201, 16 bands, dense | 54.5 µs | 51.7 µs | **5.1% faster** |
+| 801, 4 bands, dense | 272.3 µs | 273.6 µs | noise |
+| 801, 16 bands, dense | 248.7 µs | 245.8 µs | noise |
+| any grid, sparse | — | — | unchanged — one band, path untouched |
+
+End to end at the default configuration, `ProfileDriver`, 20 s:
+
+| Round | Before | After |
+| --- | --- | --- |
+| 1 | 18,001.8 gen/s | 18,825.6 gen/s |
+| 2 | 17,994.5 gen/s | 18,801.1 gen/s |
+
+**+4.5%**, and both builds are repeatable to within 0.2%.
+
+The shape is what the mechanism predicts: the change removes a fixed cost per generation, so it
+shows up where generations are short (201, ~55 µs) and disappears where a single band already
+costs 200 µs (801). Correctness is unchanged and needs no new test —
+`PartitionEquivalenceTest` already asserts the board does not depend on how work is split,
+which is exactly the property being leaned on.
+
+### Revised estimate for what remains
+
+The original entry put the ceiling at 1.5–1.8×, from workers computing only 55% of the time.
+**That was too optimistic**, because it treated all idle as removable. Most of it is not: it is
+the serial window where the calling thread merges band regions, adopts the arrays and publishes
+the snapshot, and no amount of cheaper dispatch removes that.
+
+What was actually removable by the cheapest fix measured **4.5%**. A `Phaser` with persistent
+band loops could take some of the remaining `bands - 1` park/unpark pairs, plausibly worth a
+few percent more — not a multiple.
 
 | Option | Addresses | Cost / risk |
 | --- | --- | --- |
-| **`Phaser` with persistent band loops** — workers own a band and loop across generations, synchronising on a phase boundary instead of being dispatched and parked each generation | Dispatch and parking | Workers become engine-owned rather than a shared pool, so `setPartitions` turns from a cheap command into a reconfiguration. `Phaser` spins before parking, which burns CPU while the simulation is paused unless pausing is handled explicitly. Safety is preserved: `arriveAndAwaitAdvance` gives the same happens-before edge as `invokeAll`, and bands still write disjoint slices |
-| **Finer bands** — more, smaller units so stragglers even out | Imbalance | Currently counter-productive: measured 5.4× *slower* on a sparse board, which is why `bandsFor` caps band count. Only becomes viable once dispatch is cheap, so it is synergistic with the `Phaser` change rather than independent |
-| **Work stealing** (`ForkJoinPool` with a `RecursiveAction`) | Both | Largest rewrite. Replaces the explicit band model that `PartitionEquivalenceTest` is written against |
+| **`Phaser` with persistent band loops** | The remaining hand-offs | Workers become engine-owned rather than a shared pool, so `setPartitions` turns from a cheap command into a reconfiguration, and pausing must be handled explicitly or the spin phase burns CPU while idle. Safety is preserved: `arriveAndAwaitAdvance` gives the same happens-before edge |
+| **Finer bands** | Imbalance | Now known to be worth 5–19% at most, and `bandsFor` caps band count because more bands measured 5.4× slower on a sparse board. Not worth pursuing |
+| **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent |
 
-### Recommendation
-
-**Do not start this unless throughput becomes a goal.** The theoretical ceiling is roughly
-1.5–1.8× if workers never idled, but the serial portion is not zero and the straggler component
-is not addressed by the cheapest option. At the default board the engine already runs ~300×
-faster than the 60 fps display, so none of it is visible to a user.
-
-If it is ever taken on, the order is: `Phaser` first, measure, then finer bands — and
-`PartitionEquivalenceTest` is the safety net, since it already asserts the board is independent
-of how work is split.
+**Recommendation: stop here.** The cheap, low-risk part is done. What is left is a few percent
+behind a real concurrency redesign, on an engine already running ~300× faster than the 60 fps
+display.
 
 ---
 

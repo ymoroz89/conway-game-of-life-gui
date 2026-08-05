@@ -8,7 +8,7 @@ Updated as each fix lands.
 | ID | Finding | Priority | Status |
 | --- | --- | --- | --- |
 | P1-1 | Renderer redraws the whole board every frame | 🔴 P1 | ✅ **Done** |
-| P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ⬜ Not started |
+| P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ◐ **Partly** — see notes |
 | P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** |
 | P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ⬜ Not started |
 | P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ⬜ Not started |
@@ -109,6 +109,117 @@ A property test that has never been seen to fail is not evidence.
 | --- | --- |
 | Narrow the diff scan using `ActiveRegion` | Would make the scan proportional to activity too. Needs the union-of-regions argument verified against every `Generation` factory, plus a test that a user toggle outside the live region still renders. |
 | Revisit the scaled blit | Now the dominant per-frame cost at 201×201 (0.286 of 0.347 ms). Drawing at native size, or a `VolatileImage`, would attack it. |
+
+---
+
+## P1-2 — Bands capped by the work that exists ◐ Partly done
+
+**Read this first.** P1-2 as originally written — "remove the per-generation barrier" — was
+**not** done, and is not what this change is. The barrier is still there and the simulation
+thread still parks in `invokeAll`. Investigating it surfaced a different, concrete defect,
+which is what was fixed. The ceiling P1-2 describes is unchanged for dense boards.
+
+### What the investigation actually found
+
+The band count came from the *board*: `bands = min(partitions, height)`. But the work in any
+one generation is bounded by the active region, which can be far smaller. Splitting work that
+is not there costs a task dispatch and a join per band and returns nothing.
+
+Measured with a single blinker (3 cells) against two glider guns on the same grid:
+
+| Grid | Partitions | Blinker (µs/gen) | Two guns (µs/gen) |
+| --- | --- | --- | --- |
+| 201 | 1 | 8.5 | 67.9 |
+| 201 | 4 | 26.3 | 63.9 |
+| 201 | 16 | **52.1** | 71.3 |
+| 801 | 1 | 54.5 | 860.0 |
+| 801 | 16 | 68.8 | 243.9 |
+
+On a sparse board parallelism was **actively harmful** — 8.5 → 52.1 µs at 201, six times
+slower, because sixteen bands each did almost nothing while paying full coordination cost.
+This is not a corner case: it is the board immediately after Clear, any sparse pattern, and
+any large grid holding a small population.
+
+### Change
+
+`LifeRules.bandsFor` caps the requested band count by how many bands the active rows can
+usefully fill, using the same rows-per-band figure `PartitionPlanner` uses. The planner
+measured that constant against full boards, where the active region spans nearly everything;
+this applies the identical rule to the rows that actually carry work.
+
+Band count is purely a work-distribution choice — the resulting board is identical whatever
+it returns, which `PartitionEquivalenceTest` already pins down.
+
+File: [`LifeRules.java`](../src/main/java/com/conway/engine/LifeRules.java).
+
+### Measured effect
+
+| Grid | Partitions | Board | Before | After | Change |
+| --- | --- | --- | --- | --- | --- |
+| 201 | 4 | blinker | 26.3 µs | 6.6 µs | **4.0× faster** |
+| 201 | 16 | blinker | 52.1 µs | 9.4 µs | **5.5× faster** |
+| 801 | 16 | blinker | 68.8 µs | 53.3 µs | **1.3× faster** |
+| 201 | 4 | two guns | 63.9 µs | 65.7 µs | unchanged |
+| 801 | 16 | two guns | 243.9 µs | 278.6 µs | unchanged |
+
+Dense boards are unchanged **by construction, not by measurement** — which matters, because
+run-to-run variance on the dense cases is around 5% and swamps any real difference. Probing
+the band count directly:
+
+```
+grid 201, two guns: activeRows=201 -> bands(req 4)=4  bands(req 8)=4  bands(req 16)=4
+grid 801, two guns: activeRows=801 -> bands(req 4)=4  bands(req 8)=8  bands(req 16)=16
+```
+
+At 801 the requested count passes through untouched, so the code path is identical. At 201
+everything above 4 is capped to 4 — which is the count `PartitionPlanner` recommends there
+anyway, so the engine now enforces at runtime what the planner advises. **Over-requesting
+partitions can no longer hurt.**
+
+One consequence: in `GenerationBenchmark` at 201, the rows for 4, 8, 16 and 20 partitions now
+all execute four bands. Any spread between them is measurement noise, not scaling.
+
+### Tests
+
+Twelve tests added in `LifeRulesBandingTest` (118 total, all passing), covering the
+rows-to-bands mapping, the sparse case that regressed, dense boards using every requested
+band, degenerate inputs (empty region, zero and negative partitions), and bounds across 200
+board heights.
+
+Correctness needs no new coverage: `PartitionEquivalenceTest` already asserts the resulting
+board is independent of the band count, which is exactly the invariant this change relies on.
+
+### This broke two P1-3 tests, correctly
+
+`workerPoolGrowsWithPartitionCount` and `workerPoolIsBoundedByPartitionCount` used a 32×32
+board with a blinker. Under the new rule that is one band, computed inline, so the worker pool
+is never touched and the pool could not grow. The tests were silently depending on the engine
+always splitting.
+
+They now use a 420-row board with stable blocks at both ends, so the active region spans the
+full height permanently and eight bands are genuinely used. Worth noting as a behaviour
+change in its own right: **small boards no longer use the worker pool at all.**
+
+### Honest limits
+
+- **The barrier is untouched.** The simulation thread still parks in `invokeAll` and is still
+  idle most of its life on a dense board. This change stops the engine paying coordination
+  cost when there is nothing to coordinate; it does not raise the ceiling when there is.
+- **A second O(board) cost was found and not fixed.** `computeBand`'s tail copies `everAlive`
+  and ORs it with the new board across every row in the band and every column,
+  ignoring the active region entirely. That is why a blinker on an 801 board still costs
+  ~50 µs per generation when its actual work is a handful of cells. See follow-ups.
+- **The rows-per-band constant is shared but not configurable here.** `LifeRules` uses
+  `PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION` directly, so
+  `-Dconway.minRowsPerPartition` retunes the planner's recommendation but not this cap. Worth
+  unifying if that override is ever used in anger.
+
+### Follow-ups
+
+| Item | Rationale |
+| --- | --- |
+| Prune the `everAlive` pass to the active region | The measured floor for sparse boards. `dst` is false outside the active region, so `dstEver == srcEver` there: a bulk copy plus an OR restricted to the active region would be equivalent and much cheaper. |
+| Reconsider the barrier itself | Only worth it if large-board throughput becomes a goal. Pipelining generation N+1 against rendering of N would change the single-writer model, which is what makes the current design safe. |
 
 ---
 

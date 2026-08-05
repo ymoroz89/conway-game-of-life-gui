@@ -144,6 +144,13 @@ Two consequences worth knowing:
 The constant was calibrated on one machine and one JDK. Retune it for a deployment that
 cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partitions=N`.
 
+The engine applies the same rule again per generation, against the *active region* rather
+than the whole board, and computes inline when there is too little live area to fill the
+bands. A sparse board is therefore never split: on a 201×201 grid holding a single blinker,
+sixteen bands ran six times slower than computing inline. A consequence for the table above:
+at 201 every partition count from 4 upwards now runs four bands, so differences between those
+rows are measurement noise rather than scaling.
+
 Treat these figures as indicative. This is a simple harness, not
 [JMH](https://openjdk.org/projects/code-tools/jmh/) — use JMH before drawing any
 conclusion more precise than "does adding threads help at all".

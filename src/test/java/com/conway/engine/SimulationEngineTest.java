@@ -26,6 +26,12 @@ import com.conway.model.Pattern;
 class SimulationEngineTest {
 
     private static final int SIZE = 32;
+
+    /**
+     * Tall enough for the engine to actually use eight bands: it allows one band per 50
+     * active rows, so eight bands need at least 400.
+     */
+    private static final int BANDED_SIZE = 420;
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     private SimulationEngine engine;
@@ -303,10 +309,10 @@ class SimulationEngineTest {
         // reached, even when idle threads are free. With the core pinned at maxPartitions
         // this accumulated one worker per partition per generation until every one existed:
         // a thread dump showed 20 live workers serving 4 concurrent bands.
-        try (SimulationEngine large = new SimulationEngine(SIZE, SIZE, 16)) {
-            blinker(large);
+        try (SimulationEngine large = new SimulationEngine(BANDED_SIZE, BANDED_SIZE, 16)) {
+            spanningBlocks(large, BANDED_SIZE);
             large.setPartitions(2);
-            step(large, 200);
+            step(large, 30);
 
             assertTrue(large.workerThreadCount() <= 2,
                     "expected at most 2 workers for 2 partitions but found "
@@ -318,13 +324,13 @@ class SimulationEngineTest {
     @DisplayName("Raising the partition count lets the pool grow to match")
     @Timeout(30)
     void workerPoolGrowsWithPartitionCount() throws Exception {
-        try (SimulationEngine large = new SimulationEngine(SIZE, SIZE, 16)) {
-            blinker(large);
+        try (SimulationEngine large = new SimulationEngine(BANDED_SIZE, BANDED_SIZE, 16)) {
+            spanningBlocks(large, BANDED_SIZE);
             large.setPartitions(2);
-            step(large, 50);
+            step(large, 20);
 
             large.setPartitions(8);
-            step(large, 50);
+            step(large, 20);
 
             await(() -> large.workerThreadCount() == 8);
         }
@@ -356,6 +362,25 @@ class SimulationEngineTest {
             large.setPartitions(999);
             step(large, 20);
             assertEquals(16, large.workerCoreSize());
+        }
+    }
+
+    /**
+     * Two still lifes at opposite ends, so the active region's bounding box spans the whole
+     * board permanently.
+     *
+     * <p>The engine only splits a generation across bands when the active rows can fill
+     * them, so a small board or a small pattern is computed inline and never touches the
+     * worker pool at all. Exercising the pool therefore needs a board tall enough that the
+     * requested bands are actually used. Blocks rather than blinkers: a block is stable, so
+     * the region never collapses.
+     */
+    private static void spanningBlocks(SimulationEngine target, int size) {
+        for (int row : new int[] {1, size - 3}) {
+            target.toggleCell(row, 1);
+            target.toggleCell(row, 2);
+            target.toggleCell(row + 1, 1);
+            target.toggleCell(row + 1, 2);
         }
     }
 

@@ -40,6 +40,13 @@ package com.conway.engine;
  * starting point that is right to within one step on every board measured, not a
  * substitute for measuring a deployment that cares. Both the result and the constant
  * can be overridden; see {@code conway.partitions} and {@code conway.minRowsPerPartition}.
+ *
+ * <p>This value is a recommendation for the board as a whole. {@code LifeRules} applies the
+ * same rows-per-band rule again per generation, against the active region rather than the
+ * full board, and will use fewer bands when there is not enough live area to fill them. The
+ * measurements above were taken before that cap existed, so requesting more partitions than
+ * recommended no longer reproduces the slower figures in the table — it is now capped to the
+ * recommended count instead.
  */
 public final class PartitionPlanner {
 

@@ -10,8 +10,11 @@ Updated as each fix lands.
 | P1-1 | Renderer redraws the whole board every frame | 🔴 P1 | ✅ **Done** |
 | P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ◐ **Partly** — see notes |
 | P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** |
-| P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ⬜ Not started |
-| P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ⬜ Not started |
+| P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ✅ **Done** |
+| P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ⬜ Won't fix — 0.1% of CPU |
+| N1 | Two `boolean[]` allocated per generation | 🟡 P2 | ⬜ Won't fix — measured, see notes |
+| — | **Bug:** ever-alive flags erased when the board dies out | 🔴 | ✅ **Fixed** |
+| N2 | `ActiveRegion` per band per generation | 🟢 P3 | ⬜ Won't fix — 2.3 MB/s |
 | P2-6 | Machine has substantial headroom (context only) | 🟡 P2 | ℹ️ No action |
 | P3-7..10 | Informational | 🟢 P3 | ℹ️ No action |
 | H-11..16 | Confirmed healthy | ✅ | ℹ️ No action |
@@ -109,6 +112,163 @@ A property test that has never been seen to fail is not evidence.
 | --- | --- |
 | Narrow the diff scan using `ActiveRegion` | Would make the scan proportional to activity too. Needs the union-of-regions argument verified against every `Generation` factory, plus a test that a user toggle outside the live region still renders. |
 | Revisit the scaled blit | Now the dominant per-frame cost at 201×201 (0.286 of 0.347 ms). Drawing at native size, or a `VolatileImage`, would attack it. |
+
+---
+
+## N1–N3 — New findings from the clean profile
+
+Summary: **one correctness bug found and fixed; the performance items measured and left
+alone.** The fix came out of investigating N1 rather than from the finding itself.
+
+### Bug found: ever-alive flags erased when the board dies out ✅ Fixed
+
+`next` allocates a zeroed `dstEver`, and the early return for an empty active region handed
+that array straight back. So the moment the population reached zero, every "died here" flag
+was wiped and the whole trail vanished from the board — despite `Generation` documenting the
+flags as monotonic within a run and reset only by a clear.
+
+One line: carry the flags forward before returning. Covered by
+`everAliveSurvivesExtinction`, which fails on the previous revision with
+*"its trail must outlive it"* and passes now, plus `everAliveAccumulates` for the ordinary
+path.
+
+File: [`LifeRules.java`](../src/main/java/com/conway/engine/LifeRules.java).
+
+### N1 — Per-generation allocation: measured, not changed ⬜ Won't fix
+
+The finding was ~1.5 GB/s of `boolean[]` allocation from two fresh arrays per generation.
+Reusing those buffers means recycling arrays that live `Generation` snapshots still own, and
+the immutable-snapshot contract is precisely what removed the original data race between the
+simulation thread and the renderer. **The measured cost does not justify touching it:** GC is
+167 ms across 60 s, 0.28%.
+
+While in that code the redundant `everAlive` pass looked like an easy win — the tail sweeps
+the full width of every row, though `dst` can only be true inside the active region. Three
+variants were implemented and benchmarked against an interleaved A/B (two rounds, three JVMs
+each, alternating builds to cancel thermal drift):
+
+| Variant | Sparse board | Dense board |
+| --- | --- | --- |
+| A — clone `srcEver`, mark inside the rule loop | 1.3–1.6× faster | **4% slower** at 801/16 |
+| B — per-band copy hoisted before the rule loop | 1.4× faster | **2–6% slower** |
+| C — copy and OR as two passes, OR narrowed | 1.4–1.8× faster | **~3% slower** |
+| D — copy and OR fused, rows and columns narrowed | 1.3–1.8× faster | **2–5% slower** |
+
+Medians from the interleaved run for the best variant:
+
+| Case | Before | After (D) | |
+| --- | --- | --- | --- |
+| 801, 16 bands, dense | 245.7 µs | 258.1 µs | 5% slower |
+| 801, 1 band, dense | 857 µs | 878 µs | 2.5% slower |
+| 201, 4 bands, dense | 58.9 µs | 59.9 µs | 2% slower |
+| 801, 16 bands, sparse | 47.4 µs | 30.9 µs | 1.53× faster |
+| 201, 16 bands, sparse | 4.85 µs | 2.75 µs | 1.76× faster |
+
+**All four were reverted.** The trade is bad for this application: sparse boards were never
+slow in absolute terms — every sparse figure is under 50 µs, over 20,000 generations a second
+— while dense is the actual bottleneck at 246–880 µs, and dense is what the seeded board is.
+Optimising the case nobody waits on, at the cost of the case they do, is the wrong direction.
+
+The mechanism is consistent across all four attempts: the redundant OR buys sequential access
+over a contiguous row. Skipping work costs more than the work is worth, whether the skip is
+done by narrowing bounds, splitting passes, or moving the marks into the rule loop. Variant A
+additionally moved a full-board copy off the parallel bands onto the serial prologue, which is
+straightforward Amdahl.
+
+A comment in `computeBand` records this so the next reader does not re-derive it — the loop
+looks obviously improvable and is not.
+
+### N2 — `ActiveRegion` per band per generation ⬜ Won't fix
+
+Four small records per generation, roughly 2.3 MB/s. Three orders of magnitude below the
+array allocation that itself does not justify action.
+
+### N3 / P2-5 — `Generation.population()` per frame ⬜ Won't fix
+
+Confirmed real but **0.1% of total CPU** (3 samples in 2,595). Caching it on `Generation` would
+not help: the engine produces ~18,000 generations a second against 60 frames, so each frame
+sees a fresh instance and would miss the cache every time. Genuinely removing the scan means
+counting inside `computeBand` and threading the total out through the band API — a change to
+the hot loop and the `Generation.adopt` signature for a tenth of a percent. Not worth it.
+
+---
+
+## P2-4 — Re-profiled with sampling ✅ Done
+
+A 60 second JFR recording (`settings=profile`, ~1% overhead) of a driver that mirrors the
+running application: the engine advancing continuously on its own thread plus a 60 fps render
+loop doing exactly what `LifeFrame` does per tick. Headless, so no window is needed, but the
+threading shape and per-tick work match.
+
+```
+java -XX:StartFlightRecording=duration=65s,filename=clean.jfr,settings=profile \
+     -Djava.awt.headless=true -cp target/GuiLife.jar:<driver> ProfileDriver 60
+```
+
+### Headline
+
+**18,204 generations/s**, against roughly 1,000/s under the instrumented profiler — and in
+line with the uninstrumented benchmark. **4 live worker threads**, against 20.
+
+CPU distribution over 2,595 execution samples. Note these are shares of CPU actually consumed
+by Java code: JFR samples running threads, so a parked thread contributes nothing.
+
+| Thread | Samples | Share | Top frames |
+| --- | --- | --- | --- |
+| `conway-worker-*` | 2,575 | **99.2%** | `computeBand` 88.3%, `ruleAt` 10.8% |
+| `render-loop` | 19 | **0.7%** | `renderChanges` 47%, `writeCell` 21%, `population` 16% |
+| `conway-simulation` | 1 | **0.04%** | `LifeRules.next` |
+
+GC: 290 young collections, **167 ms total pause across 60 s (0.28%)**, max 2.5 ms.
+
+### What this validates
+
+| Claim from the instrumented snapshot | Clean profile | Verdict |
+| --- | --- | --- |
+| A1 — `ruleAt` 20% and `colorOf` 7.4% are instrumentation artifact | `colorOf` does not appear at all; `ruleAt` is 10.8% of worker time and is the real border-cell path | ✅ Confirmed artifact |
+| A2 — throughput figures distorted | 18,204 gen/s vs ~1,000 | ✅ Confirmed, 18× |
+| P1-1 — renderer redraws the whole board; EDT costs as much as the simulation | render loop is **0.7%** of CPU, and `renderChanges` is its top frame, so the incremental path is the one running | ✅ Fixed, validated |
+| P1-3 — 20 workers for 4 bands | 4 live workers | ✅ Fixed, validated |
+
+### What this invalidates — P1-2's premise was wrong
+
+P1-2 was filed as "the per-generation barrier caps parallelism", from the dump showing
+`conway-simulation` at 17.3% CPU and parked in `invokeAll`. The clean profile says otherwise:
+
+- The simulation thread accounts for **1 sample in 2,595**.
+- `jdk.ThreadPark` recorded **one** event above its 10 ms threshold across the whole run. With
+  1.09 million generations in 60 s, every barrier wait was microseconds.
+
+A coordinator thread that submits four tasks and parks while workers do the work is not a
+bottleneck — it is the design working. The 17.3% CPU in the original dump was largely
+instrumentation overhead *on that thread*, since every `next`, `adopt` and `merge` call carried
+a probe.
+
+The real ceiling on parallel scaling at 201×201 is that `computeBand` stops scaling past about
+four threads at that working-set size — a memory and compute characteristic, not a
+coordination one. **The banding fix made under P1-2 remains valid**: it was justified by direct
+measurement of sparse boards (6× slower with 16 bands), not by the barrier premise. But the
+premise itself did not survive a clean measurement, and the findings document has been
+annotated accordingly.
+
+### New findings from the clean profile
+
+| # | Finding | Priority |
+| --- | --- | --- |
+| N1 | **Two `boolean[40401]` arrays allocated per generation** in `LifeRules.next` — the top allocation site by a wide margin, ~1.5 GB/s at this rate. GC absorbs it (0.28% pause), so it is not urgent, but it is the obvious next step if throughput ever matters: reuse buffers across generations. | 🟡 P2 |
+| N2 | **One `ActiveRegion` allocated per band per generation** — second-largest site, ~4.4 M objects over the run. A record, so escape analysis may already remove some. | 🟢 P3 |
+| N3 | **`Generation.population()` is 16% of render-loop samples**, confirming P2-5 is real but tiny — 0.1% of total CPU. | 🟡 P2 (already filed) |
+| N4 | **`ruleAt` is 10.8% of worker time** and is genuine, not artifact: it is the bounds-checked border path, while the fused interior loop in `computeBand` handles the rest. | ℹ️ No action |
+
+### Honest limits
+
+- The driver is headless and stands in for the EDT with a plain thread. Real Swing adds event
+  dispatch and the native blit, which this does not capture. The render-loop share is therefore
+  a floor, not the full UI cost — though the original dump measured the same work at parity
+  with the simulation thread, so the direction of the result is not in doubt.
+- One 60 second run on one machine, not best-of-N. The large ratios here (18×, 99.2% vs 0.7%)
+  are far outside run-to-run noise; the small ones, such as N3's 16%, are three samples and
+  should not be quoted precisely.
 
 ---
 

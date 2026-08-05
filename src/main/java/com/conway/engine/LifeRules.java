@@ -56,6 +56,10 @@ public final class LifeRules {
 
         ActiveRegion active = current.activeRegion().pad(width, height);
         if (active.isEmpty()) {
+            // Nothing alive, so nothing to compute -- but the ever-alive flags are monotonic
+            // within a run and must be carried forward. Returning the freshly zeroed array
+            // here erased every trail the moment the population reached zero.
+            System.arraycopy(srcEver, 0, dstEver, 0, srcEver.length);
             return Generation.adopt(width, height, dst, dstEver, current.number() + 1, ActiveRegion.EMPTY);
         }
 
@@ -196,6 +200,18 @@ public final class LifeRules {
             }
         }
 
+        // Carry the previous generation's ever-alive flags forward and mark the cells that
+        // newly qualify, fused into one pass per row so the row is still in cache for the
+        // second half.
+        //
+        // The OR sweeps the full width even though dst can only be true inside the active
+        // region, so on a sparse board most of it is provably redundant. Narrowing it was
+        // tried three ways -- bounding the columns, splitting copy and OR into separate
+        // passes, and folding the marks into the rule loop above -- and every one of them
+        // cost 2-5% on a dense board while only speeding up boards that were already taking
+        // under 50us a generation. The redundancy is deliberate: it buys sequential access
+        // over a contiguous row, which is worth more than the work it skips. See
+        // docs/profiling-issues-fixing-progress.md.
         for (int row = fromRow; row < toRow; row++) {
             int rowBase = row * width;
             System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);

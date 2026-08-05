@@ -2,6 +2,15 @@
 
 Analysis of a VisualVM CPU snapshot and a JVM thread dump captured on 2026-07-31.
 
+> **Superseded in part by a clean profile.** These findings come from an *instrumented*
+> recording. A later JFR sampling run (P2-4 in
+> [profiling-issues-fixing-progress.md](profiling-issues-fixing-progress.md)) confirmed
+> A1, A2, P1-1 and P1-3, but showed that **P1-2's premise does not hold**: the simulation
+> thread accounts for 1 execution sample in 2,595 and every barrier wait is microseconds.
+> The barrier is not the bottleneck; the 17.3% CPU below was largely instrumentation
+> overhead on that thread. See [P1-2](#p1-2--the-per-generation-barrier-is-the-bottleneck)
+> for the correction in place.
+
 ## Source artifacts
 
 | File | What it is | Captured |
@@ -127,6 +136,15 @@ fields, and snapshots are immutable — and rewrite only the cells that changed.
 drops from O(board) to O(changed).
 
 ### P1-2 — The per-generation barrier is the parallelism ceiling
+
+> ⚠️ **This finding did not survive a clean profile.** Under JFR sampling the simulation
+> thread accounts for 1 sample in 2,595, and only one `ThreadPark` event in 60 s exceeded the
+> 10 ms threshold across 1.09 million generations — so barrier waits are microseconds. The
+> 17.3% CPU figure below is largely instrumentation overhead on the simulation thread, since
+> every `next`, `adopt` and `merge` call carried a probe. A coordinator that submits work and
+> parks is the design working, not a bottleneck. The real scaling limit is that `computeBand`
+> stops scaling past ~4 threads at this working-set size. Retained here as a record of what
+> the instrumented artifacts showed.
 
 *Source: dump. Proven, not inferred.*
 

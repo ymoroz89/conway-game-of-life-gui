@@ -36,6 +36,53 @@ class LifeRulesTest {
     }
 
     @Test
+    @DisplayName("Ever-alive flags survive the board dying out")
+    void everAliveSurvivesExtinction() throws Exception {
+        // A lone cell dies at once, leaving an empty board and an empty active region. The
+        // flags are documented as monotonic within a run and are what the renderer draws as
+        // "died here", so an empty board must not erase them. The early return for an empty
+        // region used to hand back a freshly zeroed array, wiping every trail the moment the
+        // population reached zero.
+        Generation board = Generation.empty(8, 8).withCell(3, 3, true);
+
+        for (int i = 0; i < 3; i++) {
+            board = rules.next(board, 1);
+        }
+
+        assertEquals(0, board.population(), "the cell should have died of underpopulation");
+        assertTrue(board.wasEverAlive(3, 3), "its trail must outlive it");
+    }
+
+    @Test
+    @DisplayName("Ever-alive flags accumulate across generations")
+    void everAliveAccumulates() throws Exception {
+        // A glider moves, so cells it has left must stay marked while new ones are added.
+        Generation board = board(
+                ".O........",
+                "..O.......",
+                "OOO.......",
+                "..........",
+                "..........",
+                "..........");
+
+        Generation later = board;
+        for (int i = 0; i < 4; i++) {
+            later = rules.next(later, 2);
+        }
+
+        assertTrue(later.wasEverAlive(2, 0), "a cell the glider has vacated stays marked");
+        assertTrue(later.population() > 0, "the glider is still alive");
+        for (int row = 0; row < later.height(); row++) {
+            for (int col = 0; col < later.width(); col++) {
+                if (board.wasEverAlive(row, col)) {
+                    assertTrue(later.wasEverAlive(row, col),
+                            "flag lost at (" + row + ", " + col + ")");
+                }
+            }
+        }
+    }
+
+    @Test
     @DisplayName("A block is a still life")
     void blockIsStable() throws Exception {
         Generation start = board(

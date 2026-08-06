@@ -6,8 +6,9 @@ import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -26,11 +27,11 @@ import com.conway.model.Pattern;
  * caller-facing method does nothing but enqueue a {@link Command}; nothing outside
  * this class touches the board.
  *
- * <p>Results are handed to readers as immutable {@link Generation} snapshots
- * published through a {@code volatile} field. A reader therefore sees either
- * generation N or generation N+1 in full, never a mixture of the two, and needs no
- * lock. This is what allows the Swing event dispatch thread to render while the
- * simulation runs.
+ * <p>The board and its statistics are handed to readers as one immutable
+ * {@link EngineSnapshot} published through a single {@code volatile} field. A reader
+ * therefore sees either generation N or generation N+1 in full, always with the
+ * throughput numbers that belong to it, and needs no lock. This is what allows the
+ * Swing event dispatch thread to render while the simulation runs.
  *
  * <p>Pausing blocks on {@link BlockingQueue#take()} rather than
  * {@code Object.wait()}, so a step request enqueued at any moment is always honoured:
@@ -38,13 +39,23 @@ import com.conway.model.Pattern;
  * advance the board. Requests are queued, never dropped.
  *
  * <p>All public methods are safe to call from any thread.
+ *
+ * <h2>Virtual threads</h2>
+ * Both the simulation thread and the band workers are virtual threads. The simulation
+ * thread spends its life blocked in {@code take()}/{@code Future.get()} and parks
+ * between generations, so it unmounts from any carrier while blocked and costs nothing
+ * while idle. The band workers are pure CPU, but a virtual-thread-per-task executor
+ * measured at parity or better than the previous {@code ThreadPoolExecutor} on the
+ * {@code GenerationBenchmark} (see docs/java21-migration.md), and it removes the entire
+ * pool-sizing apparatus: there is no core size to track, no keepalive, and no
+ * unbounded-accumulation bug class. Virtual threads are daemon by default, so the JVM
+ * can still exit if a shutdown path is missed.
  */
 public final class SimulationEngine implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(SimulationEngine.class);
 
     private static final long SHUTDOWN_TIMEOUT_MS = 5_000L;
-    private static final long WORKER_KEEPALIVE_SECONDS = 60L;
 
     /** Partition count before anything configures one. A single band runs inline. */
     private static final int INITIAL_PARTITIONS = 1;
@@ -64,16 +75,26 @@ public final class SimulationEngine implements AutoCloseable {
     private final BlockingQueue<Command> commands = new LinkedBlockingQueue<>();
     private final List<EngineListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final ThreadPoolExecutor workers;
+    private final ExecutorService workers;
     private final LifeRules rules;
     private final Thread simulationThread;
     private final int maxPartitions;
 
-    private volatile Generation current;
-    private volatile SimulationStats stats = SimulationStats.idle();
+    /**
+     * The single publication point. The board and its statistics are always observed
+     * together, so a reader can never see a new generation with stale counters.
+     * Written only by the simulation thread (and once by the constructor); read by
+     * any thread.
+     */
+    private volatile EngineSnapshot snapshot;
+
+    /** Lifecycle latch. A separate volatile rather than part of {@link #snapshot}: it is
+     * written by {@link #close()} on the caller's thread too, and bundling it would let a
+     * concurrent close overwrite a newer generation. */
     private volatile State state = State.PAUSED;
 
     // ---- Simulation-thread-confined state. Never read or written from anywhere else. ----
+    private Generation board;
     private boolean running;
     private boolean shutdownRequested;
     private int partitions = INITIAL_PARTITIONS;
@@ -86,41 +107,31 @@ public final class SimulationEngine implements AutoCloseable {
      *
      * @param width         board width in cells
      * @param height        board height in cells
-     * @param maxPartitions upper bound on concurrent row bands, and so on the worker pool
-     *                      size; the pool itself is only as large as the partition count
-     *                      currently in use
+     * @param maxPartitions upper bound on concurrent row bands
      */
     public SimulationEngine(int width, int height, int maxPartitions) {
         if (maxPartitions < 1) {
             throw new IllegalArgumentException("maxPartitions must be at least 1 but was " + maxPartitions);
         }
         this.maxPartitions = maxPartitions;
-        this.current = Generation.empty(width, height);
+        this.snapshot = EngineSnapshot.initial(width, height);
+        this.board = snapshot.generation();
 
-        // One pool for the lifetime of the engine, not one per run.
-        //
-        // The core size tracks the partition count rather than sitting at maxPartitions.
-        // ThreadPoolExecutor starts a new thread for every submitted task until the core
-        // size is reached, even when idle threads are already available, so a core of
-        // maxPartitions accumulated one thread per partition per generation until all of
-        // them existed: a dump showed 20 live workers for 4 concurrent bands. Core
-        // timeout alone did not reclaim them, because under continuous load every thread
-        // picked up work inside the keepalive window.
-        //
-        // The queue is unbounded, so maximumPoolSize is never consulted and the core size
-        // is what actually bounds the pool. It is kept at maxPartitions so setCorePoolSize
-        // can raise the core later without violating core <= maximum.
-        this.workers = new ThreadPoolExecutor(
-                INITIAL_PARTITIONS, maxPartitions,
-                WORKER_KEEPALIVE_SECONDS, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(),
-                new NamedThreadFactory("conway-worker"));
-        this.workers.allowCoreThreadTimeOut(true);
+        // One virtual-thread-per-task executor for the lifetime of the engine. Bands are
+        // pure CPU, so a virtual thread per band is as fast as a platform pool (measured
+        // at parity or better) and needs no sizing: there is no core size to track, no
+        // keepalive, and no unbounded-accumulation bug class. Virtual threads are daemon,
+        // so the JVM can exit even if a shutdown path is missed.
+        this.workers = Executors.newVirtualThreadPerTaskExecutor();
 
         this.rules = new LifeRules(workers);
-        this.simulationThread = new Thread(this::runLoop, "conway-simulation");
-        this.simulationThread.setDaemon(true);
-        this.simulationThread.start();
+        // The simulation thread spends its life blocked in take()/Future.get() and parks
+        // between generations, so a virtual thread is the right fit: it unmounts from any
+        // carrier while blocked and costs nothing while idle. Virtual threads are daemon
+        // by default, so the JVM can still exit if a shutdown path is missed.
+        this.simulationThread = Thread.ofVirtual()
+                .name("conway-simulation")
+                .start(this::runLoop);
     }
 
     // ------------------------------------------------------------------
@@ -166,7 +177,7 @@ public final class SimulationEngine implements AutoCloseable {
      * @param count clamped to {@code [1, maxPartitions]}
      */
     public void setPartitions(int count) {
-        submit(new Command.SetPartitions(Math.max(1, Math.min(count, maxPartitions))));
+        submit(new Command.SetPartitions(Math.clamp(count, 1, maxPartitions)));
     }
 
     // ------------------------------------------------------------------
@@ -174,16 +185,24 @@ public final class SimulationEngine implements AutoCloseable {
     // ------------------------------------------------------------------
 
     /**
+     * The most recently published board together with its statistics, as one immutable
+     * bundle. Every call may return a newer instance; the result is safe to hold.
+     */
+    public EngineSnapshot snapshot() {
+        return snapshot;
+    }
+
+    /**
      * The most recently published board. Every call may return a newer instance;
      * the returned snapshot is immutable and safe to hold.
      */
     public Generation currentGeneration() {
-        return current;
+        return snapshot.generation();
     }
 
     /** Throughput measurement for the current run. */
     public SimulationStats stats() {
-        return stats;
+        return snapshot.stats();
     }
 
     public State state() {
@@ -192,25 +211,6 @@ public final class SimulationEngine implements AutoCloseable {
 
     public int maxPartitions() {
         return maxPartitions;
-    }
-
-    /**
-     * Live worker threads. This is bounded by the partition count in use, not by
-     * {@link #maxPartitions()}.
-     *
-     * <p>Package-private: it exists so the pool's sizing is observable to tests, which is
-     * otherwise only visible in a thread dump.
-     */
-    int workerThreadCount() {
-        return workers.getPoolSize();
-    }
-
-    /**
-     * The pool's core size, which is what actually bounds the thread count given the
-     * unbounded queue. Package-private for the same reason as {@link #workerThreadCount()}.
-     */
-    int workerCoreSize() {
-        return workers.getCorePoolSize();
     }
 
     public void addListener(EngineListener listener) {
@@ -234,7 +234,7 @@ public final class SimulationEngine implements AutoCloseable {
     }
 
     /**
-     * Stops the simulation thread and releases the worker pool.
+     * Stops the simulation thread and releases the worker executor.
      *
      * <p>Idempotent. Blocks until the thread has stopped or a timeout expires.
      */
@@ -256,15 +256,9 @@ public final class SimulationEngine implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
-        workers.shutdown();
-        try {
-            if (!workers.awaitTermination(SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                workers.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            workers.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
+        // Virtual threads are daemon, so this is hygiene rather than a requirement for the
+        // JVM to exit. close() waits for in-flight bands to finish.
+        workers.close();
         setState(State.STOPPED);
         LOG.info("Simulation engine stopped");
     }
@@ -304,73 +298,69 @@ public final class SimulationEngine implements AutoCloseable {
     }
 
     private void handle(Command command) throws InterruptedException {
-        if (command instanceof Command.Start) {
-            if (!running) {
-                running = true;
+        switch (command) {
+            case Command.Start ignored -> {
+                if (!running) {
+                    running = true;
+                    generationsInRun = 0L;
+                    elapsedNanos = 0L;
+                    runStartNanos = System.nanoTime();
+                    LOG.info("Run started with {} partition(s)", partitions);
+                    setState(State.RUNNING);
+                }
+            }
+            case Command.Pause ignored -> {
+                if (running) {
+                    running = false;
+                    logRunSummary();
+                }
+                setState(State.PAUSED);
+            }
+            case Command.Step ignored -> advance(false);
+            case Command.Clear ignored -> {
+                running = false;
                 generationsInRun = 0L;
                 elapsedNanos = 0L;
-                runStartNanos = System.nanoTime();
-                LOG.info("Run started with {} partition(s)", partitions);
-                setState(State.RUNNING);
+                board = Generation.empty(board.width(), board.height());
+                publish(board, new SimulationStats(0L, 0L, 0L, partitions));
+                LOG.info("Board cleared");
+                setState(State.PAUSED);
             }
-        } else if (command instanceof Command.Pause) {
-            if (running) {
-                running = false;
-                logRunSummary();
+            case Command.ToggleCell toggle -> applyToggle(toggle);
+            case Command.PlacePattern place -> {
+                board = board.withPattern(place.pattern(), place.row(), place.col());
+                publish(board, snapshot.stats());
+                LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
             }
-            setState(State.PAUSED);
-        } else if (command instanceof Command.Step) {
-            advance(false);
-        } else if (command instanceof Command.Clear) {
-            running = false;
-            generationsInRun = 0L;
-            elapsedNanos = 0L;
-            current = Generation.empty(current.width(), current.height());
-            stats = new SimulationStats(0L, 0L, 0L, partitions);
-            LOG.info("Board cleared");
-            setState(State.PAUSED);
-        } else if (command instanceof Command.ToggleCell toggle) {
-            applyToggle(toggle);
-        } else if (command instanceof Command.PlacePattern place) {
-            current = current.withPattern(place.pattern(), place.row(), place.col());
-            LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
-        } else if (command instanceof Command.SetPartitions setPartitions) {
-            if (partitions != setPartitions.count()) {
-                partitions = setPartitions.count();
-                // Keeps the pool the same size as the work actually submitted. Handled on
-                // the simulation thread, the same thread that submits bands, so the pool is
-                // always resized before the next generation uses the new count.
-                //
-                // Raising it takes effect immediately. Lowering it does not retire the
-                // surplus promptly: setCorePoolSize interrupts idle workers, but an
-                // interrupted worker in getTask clears its timed-out flag and polls again,
-                // so a thread only exits once a poll actually times out. Surplus workers
-                // therefore go away within WORKER_KEEPALIVE_SECONDS, not at once. That is
-                // acceptable -- the bug was unbounded accumulation, not slow reclamation.
-                workers.setCorePoolSize(partitions);
-                LOG.info("Partition count changed to {}", partitions);
-                stats = new SimulationStats(
-                        stats.generation(), stats.generationsInRun(), stats.elapsedNanos(), partitions);
+            case Command.SetPartitions setPartitions -> {
+                if (partitions != setPartitions.count()) {
+                    partitions = setPartitions.count();
+                    LOG.info("Partition count changed to {}", partitions);
+                    publish(board, new SimulationStats(board.number(), generationsInRun, elapsedNanos, partitions));
+                }
             }
-        } else if (command instanceof Command.Barrier barrier) {
-            barrier.latch().countDown();
-        } else if (command instanceof Command.Shutdown) {
-            if (running) {
-                running = false;
-                logRunSummary();
+            case Command.Barrier barrier -> barrier.latch().countDown();
+            case Command.Shutdown ignored -> {
+                if (running) {
+                    running = false;
+                    logRunSummary();
+                }
+                shutdownRequested = true;
             }
-            shutdownRequested = true;
         }
     }
 
     private void applyToggle(Command.ToggleCell toggle) {
-        Generation board = current;
-        if (toggle.row() < 0 || toggle.row() >= board.height()
-                || toggle.col() < 0 || toggle.col() >= board.width()) {
+        Generation current = board;
+        if (toggle.row() < 0 || toggle.row() >= current.height()
+                || toggle.col() < 0 || toggle.col() >= current.width()) {
             return;
         }
-        boolean live = !board.isAlive(toggle.row(), toggle.col());
-        current = board.withCell(toggle.row(), toggle.col(), live);
+        boolean live = !current.isAlive(toggle.row(), toggle.col());
+        board = current.withCell(toggle.row(), toggle.col(), live);
+        // The throughput counters are unaffected by an edit; republish the unchanged stats
+        // with the new board so the navigation clock never rewinds.
+        publish(board, snapshot.stats());
         LOG.debug("{} cell at (row {}, col {})", live ? "Added" : "Removed", toggle.row(), toggle.col());
     }
 
@@ -382,18 +372,18 @@ public final class SimulationEngine implements AutoCloseable {
      */
     private void advance(boolean timed) throws InterruptedException {
         try {
-            Generation next = rules.next(current, partitions);
-            current = next;
+            Generation next = rules.next(board, partitions);
             if (timed) {
                 generationsInRun++;
                 elapsedNanos = System.nanoTime() - runStartNanos;
             }
-            stats = new SimulationStats(next.number(), generationsInRun, elapsedNanos, partitions);
+            board = next;
+            publish(next, new SimulationStats(next.number(), generationsInRun, elapsedNanos, partitions));
         } catch (InterruptedException e) {
             throw e;
         } catch (RuntimeException e) {
             running = false;
-            LOG.error("Generation {} failed; simulation paused", current.number() + 1, e);
+            LOG.error("Generation {} failed; simulation paused", board.number() + 1, e);
             setState(State.FAILED);
             for (EngineListener listener : listeners) {
                 listener.onError(e);
@@ -401,8 +391,13 @@ public final class SimulationEngine implements AutoCloseable {
         }
     }
 
+    /** Single write point for the volatile snapshot: generation and stats change together. */
+    private void publish(Generation generation, SimulationStats stats) {
+        snapshot = new EngineSnapshot(generation, stats);
+    }
+
     private void logRunSummary() {
-        SimulationStats snapshot = stats;
+        SimulationStats snapshot = this.snapshot.stats();
         LOG.info("Run finished: {} generations in {} s using {} partition(s), {} generations/s",
                 snapshot.generationsInRun(),
                 String.format("%.3f", snapshot.elapsedSeconds()),

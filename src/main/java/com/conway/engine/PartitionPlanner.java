@@ -89,7 +89,7 @@ public final class PartitionPlanner {
         }
 
         int byWorkload = rows / minRowsPerPartition;
-        return Math.max(1, Math.min(byWorkload, maxPartitions));
+        return Math.clamp(byWorkload, 1, maxPartitions);
     }
 
     /**

@@ -28,6 +28,27 @@ toggle it, including while the simulation is running.
 Live cells are mint, cells that have died fade to plum, and cells where nothing has
 ever lived stay near-black.
 
+## JVM flags
+
+The application is a Swing GUI with a small, steady allocation rate (two `boolean[]`
+per generation, ~1.5 GB/s at full throughput). The default G1 collector handles this
+with negligible pause (measured ~1.6 ms max per collection, a few ms total over a
+20 s run). Recommended flags for a smooth interactive experience:
+
+```bash
+java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
+```
+
+- `-Xms256m -Xmx1g` — bound the heap so the JVM never grows unboundedly. The board
+  is at most 10,000×10,000 cells, so a gigabyte is generous.
+- `-XX:MaxGCPauseMillis=20` — keep G1 pauses under the frame budget.
+- `-XX:+UseZGC` — optional alternative for very large boards; ZGC's sub-millisecond
+  pauses come at higher CPU cost, which is fine for an interactive app but pointless
+  at the default board size.
+
+The engine uses virtual threads for both the simulation actor and the band workers.
+No pinning was observed in a JFR recording (see `docs/java21-migration.md`).
+
 ## Configuration
 
 Every setting is a system property; the defaults are shown.
@@ -54,12 +75,14 @@ The application is a single-writer actor with an immutable-snapshot read path.
 - **`SimulationEngine`** owns the board. It is the only thread that ever mutates
   simulation state. Everything else — the UI, tests — submits commands to a queue.
   Pausing blocks on `BlockingQueue.take()`, so a queued step request can never be
-  lost and a spurious wakeup can never advance the board.
-- **`Generation`** is an immutable snapshot published through a `volatile` field.
-  Readers see generation N or N+1 in full, never a mixture, and need no lock. Cells
-  are flat `boolean[]` indexed `row * width + col`.
+  lost and a spurious wakeup can never advance the board. Both the simulation actor
+  and the band workers run on virtual threads.
+- **`Generation`** is an immutable snapshot published through a single `volatile`
+  field together with its statistics (`EngineSnapshot`). Readers see generation N or
+  N+1 in full, always with the throughput numbers that belong to it, and need no
+  lock. Cells are flat `boolean[]` indexed `row * width + col`.
 - **`LifeRules`** splits a generation into contiguous row bands. Bands write to
-  disjoint slices, so no synchronisation is needed between workers; `invokeAll`
+  disjoint slices, so no synchronisation is needed between workers; `Future.get()`
   supplies the happens-before edge. A failing band aborts the generation rather than
   silently producing a wrong board.
 - **`BoardView`** writes colours into the `int[]` backing one `BufferedImage` and

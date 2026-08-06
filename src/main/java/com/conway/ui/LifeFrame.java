@@ -29,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import com.conway.config.BoardSizeOption;
 import com.conway.config.LifeConfig;
 import com.conway.engine.EngineListener;
+import com.conway.engine.EngineSnapshot;
 import com.conway.engine.PartitionPlanner;
 import com.conway.engine.SimulationEngine;
 import com.conway.engine.SimulationSeeder;
@@ -358,16 +359,17 @@ public final class LifeFrame extends JFrame {
 
     /** Pulls the latest snapshot and statistics. Runs on the event dispatch thread. */
     private void refresh() {
-        Generation generation = engine.currentGeneration();
+        // One volatile read instead of three: the generation and its throughput figures
+        // are published together, so they can never be observed mismatched.
+        EngineSnapshot snapshot = engine.snapshot();
+        Generation generation = snapshot.generation();
         boardView.setGeneration(generation);
 
-        SimulationStats stats = engine.stats();
+        SimulationStats stats = snapshot.stats();
         generationValue.setText(String.format(Locale.ROOT, "%,d", stats.generation()));
         speedValue.setText(String.format(Locale.ROOT, "%,.1f", stats.generationsPerSecond()));
         partitionsValue.setText(Integer.toString(stats.partitions()));
-        populationValue.setText(generation == null
-                ? "0"
-                : String.format(Locale.ROOT, "%,d", generation.population()));
+        populationValue.setText(String.format(Locale.ROOT, "%,d", generation.population()));
     }
 
     private void applyState(SimulationEngine.State state) {

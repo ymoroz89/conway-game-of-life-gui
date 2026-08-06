@@ -146,13 +146,15 @@ public final class LifeRules {
      * returns, which is what {@code PartitionEquivalenceTest} pins down.
      */
     static int bandsFor(int partitions, int height, ActiveRegion active) {
-        int requested = Math.max(1, Math.min(partitions, height));
+        int requested = Math.clamp(partitions, 1, height);
         if (active.isEmpty()) {
             return 1;
         }
         int activeRows = active.maxRow() - active.minRow() + 1;
         int useful = activeRows / PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION;
-        return Math.max(1, Math.min(requested, useful));
+        // Math.clamp requires min <= max, so a region too small to fill one band (useful == 0)
+        // must be floored to 1 before clamping.
+        return Math.clamp(requested, 1, Math.max(1, useful));
     }
 
     private static BandResult computeBand(boolean[] src, boolean[] srcEver,

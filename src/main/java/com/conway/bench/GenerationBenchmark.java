@@ -21,7 +21,11 @@ import com.conway.model.PatternLoader;
  * reported zero for any run shorter than a second.
  *
  * <p>Run it with {@code java -cp target/classes com.conway.bench.GenerationBenchmark}
- * or from the shaded jar. Optional arguments: grid size, generations per measurement.
+ * or from the shaded jar. Optional arguments: grid size, generations per measurement,
+ * and an executor mode of {@code platform} (default) or {@code virtual}. The virtual
+ * mode uses a virtual-thread-per-task executor, which is how the band workers would
+ * run if the pool were replaced; the two modes are compared to decide whether that
+ * replacement is worth making.
  *
  * <p>This is a deliberately simple harness, not a rigorous microbenchmark. It warms
  * up, resets to an identical board before every measurement and takes the best of
@@ -42,16 +46,20 @@ public final class GenerationBenchmark {
     public static void main(String[] args) throws Exception {
         int gridSize = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_GRID_SIZE;
         int generations = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_GENERATIONS;
+        boolean virtual = args.length > 2 && args[2].equals("virtual");
         int cores = Runtime.getRuntime().availableProcessors();
         int maxPartitions = Math.min(gridSize, cores * 2);
 
         System.out.printf(Locale.ROOT,
-                "Board %dx%d, %d generations per measurement, best of %d, %d available processors%n%n",
-                gridSize, gridSize, generations, REPETITIONS, cores);
+                "Board %dx%d, %d generations per measurement, best of %d, %d available processors, %s executor%n%n",
+                gridSize, gridSize, generations, REPETITIONS, cores, virtual ? "virtual" : "platform");
 
         Generation seed = seededBoard(gridSize);
-        ExecutorService executor = Executors.newFixedThreadPool(maxPartitions);
-        try {
+        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
+        // down and waits for it to terminate, replacing the manual shutdown block.
+        try (ExecutorService executor = virtual
+                ? Executors.newVirtualThreadPerTaskExecutor()
+                : Executors.newFixedThreadPool(maxPartitions)) {
             LifeRules rules = new LifeRules(executor);
             warmUp(rules, seed, maxPartitions);
 
@@ -64,11 +72,6 @@ public final class GenerationBenchmark {
             }
 
             report(results);
-        } finally {
-            executor.shutdown();
-            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
         }
     }
 

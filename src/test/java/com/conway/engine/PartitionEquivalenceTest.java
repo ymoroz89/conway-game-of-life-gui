@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -40,14 +39,15 @@ class PartitionEquivalenceTest {
 
     @BeforeAll
     static void setUp() {
+        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
+        // down and waits for it to terminate, replacing the manual shutdown block.
         executor = Executors.newFixedThreadPool(8);
         rules = new LifeRules(executor);
     }
 
     @AfterAll
-    static void tearDown() throws InterruptedException {
-        executor.shutdownNow();
-        executor.awaitTermination(5, TimeUnit.SECONDS);
+    static void tearDown() {
+        executor.close();
     }
 
     @ParameterizedTest(name = "{0} partitions produce the single-threaded result")

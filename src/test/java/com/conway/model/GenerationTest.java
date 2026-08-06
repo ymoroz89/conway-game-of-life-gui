@@ -111,6 +111,64 @@ class GenerationTest {
     }
 
     @Test
+    @DisplayName("adopt with a supplied population uses it without scanning")
+    void adoptWithPopulationUsesSuppliedCount() {
+        boolean[] alive = new boolean[9];
+        boolean[] everAlive = new boolean[9];
+        alive[0] = true;
+        alive[4] = true;
+        everAlive[0] = true;
+        everAlive[4] = true;
+
+        Generation board = Generation.adopt(3, 3, alive, everAlive, 0L, ActiveRegion.EMPTY, 2);
+
+        assertEquals(2, board.population());
+        assertTrue(board.isAlive(0, 0));
+        assertTrue(board.isAlive(1, 1));
+    }
+
+    @Test
+    @DisplayName("adopt with a supplied population rejects a negative count")
+    void adoptWithPopulationRejectsNegative() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Generation.adopt(3, 3, new boolean[9], new boolean[9], 0L,
+                        ActiveRegion.EMPTY, -1));
+    }
+
+    @Test
+    @DisplayName("withCell maintains the population incrementally")
+    void withCellMaintainsPopulation() {
+        Generation board = Generation.empty(3, 3);
+
+        Generation one = board.withCell(1, 1, true);
+        assertEquals(1, one.population());
+
+        Generation two = one.withCell(2, 2, true);
+        assertEquals(2, two.population());
+
+        // Turning an already-live cell on again must not double-count.
+        Generation same = two.withCell(2, 2, true);
+        assertEquals(2, same.population());
+
+        Generation back = two.withCell(1, 1, false);
+        assertEquals(1, back.population());
+    }
+
+    @Test
+    @DisplayName("withPattern counts only cells that newly become alive")
+    void withPatternCountsNewlyAliveCells() {
+        Pattern block = Pattern.parse("block", List.of("OO", "OO"));
+        Generation board = Generation.empty(4, 4);
+
+        Generation stamped = board.withPattern(block, 0, 0);
+        assertEquals(4, stamped.population());
+
+        // Overlapping stamp: the two cells already alive must not be double-counted.
+        Generation overlapped = stamped.withPattern(block, 1, 1);
+        assertEquals(7, overlapped.population());
+    }
+
+    @Test
     @DisplayName("Boards with identical contents and generation numbers are equal")
     void equality() {
         Generation first = board("OO.", ".O.", "...");

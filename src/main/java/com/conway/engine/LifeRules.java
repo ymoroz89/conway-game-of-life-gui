@@ -62,14 +62,15 @@ public final class LifeRules {
             // within a run and must be carried forward. Returning the freshly zeroed array
             // here erased every trail the moment the population reached zero.
             System.arraycopy(srcEver, 0, dstEver, 0, srcEver.length);
-            return Generation.adopt(width, height, dst, dstEver, current.number() + 1, ActiveRegion.EMPTY);
+            return Generation.adopt(width, height, dst, dstEver, current.number() + 1,
+                    ActiveRegion.EMPTY, 0);
         }
 
         int bands = bandsFor(partitions, height, active);
-        ActiveRegion[] bandRegions = new ActiveRegion[bands];
+        BandResult[] bandResults = new BandResult[bands];
 
         if (bands == 1) {
-            bandRegions[0] = computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active);
+            bandResults[0] = computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active);
         } else {
             int baseSize = height / bands;
             int remainder = height % bands;
@@ -88,7 +89,7 @@ public final class LifeRules {
             // otherwise parks for the whole generation -- a wall-clock profile measured it
             // blocked 88% of the time while the pool did the work. Running a band on it
             // keeps the same degree of parallelism with one fewer hand-off per generation.
-            List<Future<ActiveRegion>> futures = new ArrayList<>(bands - 1);
+            List<Future<BandResult>> futures = new ArrayList<>(bands - 1);
             for (int i = 1; i < bands; i++) {
                 final int bandFrom = from[i];
                 final int bandTo = to[i];
@@ -97,7 +98,7 @@ public final class LifeRules {
             }
 
             try {
-                bandRegions[0] =
+                bandResults[0] =
                         computeBand(src, srcEver, dst, dstEver, width, height, from[0], to[0], active);
             } catch (RuntimeException e) {
                 // Dispatched bands surface as ExecutionException below and are wrapped. This
@@ -110,7 +111,7 @@ public final class LifeRules {
                 try {
                     // Future.get supplies the happens-before edge for the dispatched bands;
                     // band zero was written by this thread, so its writes are already visible.
-                    bandRegions[i] = futures.get(i - 1).get();
+                    bandResults[i] = futures.get(i - 1).get();
                 } catch (ExecutionException e) {
                     throw new SimulationException("Generation computation failed", e.getCause());
                 }
@@ -118,11 +119,13 @@ public final class LifeRules {
         }
 
         ActiveRegion nextActive = ActiveRegion.EMPTY;
-        for (ActiveRegion r : bandRegions) {
-            nextActive = nextActive.merge(r);
+        int population = 0;
+        for (BandResult result : bandResults) {
+            nextActive = nextActive.merge(result.region());
+            population += result.population();
         }
 
-        return Generation.adopt(width, height, dst, dstEver, current.number() + 1, nextActive);
+        return Generation.adopt(width, height, dst, dstEver, current.number() + 1, nextActive, population);
     }
 
     /**
@@ -152,10 +155,10 @@ public final class LifeRules {
         return Math.max(1, Math.min(requested, useful));
     }
 
-    private static ActiveRegion computeBand(boolean[] src, boolean[] srcEver,
-                                            boolean[] dst, boolean[] dstEver,
-                                            int width, int height, int fromRow, int toRow,
-                                            ActiveRegion activeLimit) {
+    private static BandResult computeBand(boolean[] src, boolean[] srcEver,
+                                          boolean[] dst, boolean[] dstEver,
+                                          int width, int height, int fromRow, int toRow,
+                                          ActiveRegion activeLimit) {
         int minRow = Integer.MAX_VALUE, maxRow = -1, minCol = Integer.MAX_VALUE, maxCol = -1;
 
         int rowStart = Math.max(fromRow, activeLimit.minRow());
@@ -239,16 +242,24 @@ public final class LifeRules {
         // under 50us a generation. The redundancy is deliberate: it buys sequential access
         // over a contiguous row, which is worth more than the work it skips. See
         // docs/profiling-issues-fixing-progress.md.
+        //
+        // The population count is folded into this same pass: it already visits every cell
+        // of the band, so counting dst here costs nothing extra and spares the status bar
+        // an O(board) scan per frame.
+        int population = 0;
         for (int row = fromRow; row < toRow; row++) {
             int rowBase = row * width;
             System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);
             for (int col = 0; col < width; col++) {
                 int i = rowBase + col;
                 dstEver[i] |= dst[i];
+                if (dst[i]) {
+                    population++;
+                }
             }
         }
 
-        return new ActiveRegion(minRow, maxRow, minCol, maxCol);
+        return new BandResult(new ActiveRegion(minRow, maxRow, minCol, maxCol), population);
     }
 
     /** Bounds-checked rule evaluation, used for cells on the border of the board. */
@@ -269,5 +280,14 @@ public final class LifeRules {
         }
         boolean alive = src[row * width + col];
         return alive ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
+    }
+
+    /**
+     * What one band computed: the active region of its slice of the destination board,
+     * and the number of live cells it wrote. The population is summed across bands by
+     * {@link #next} and handed to {@link Generation#adopt} so the snapshot carries the
+     * count without a second scan.
+     */
+    private record BandResult(ActiveRegion region, int population) {
     }
 }

@@ -1,21 +1,15 @@
 package com.conway.ui;
 
-import java.awt.Color;
-import java.awt.Dimension;
-import java.awt.Graphics;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
+import com.conway.model.Generation;
+
+import javax.swing.*;
+import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.util.Arrays;
 import java.util.Objects;
-
-import javax.swing.JPanel;
-
-import com.conway.model.Generation;
 
 /**
  * Renders the board.
@@ -26,17 +20,23 @@ import com.conway.model.Generation;
  * and called {@code getInsets()} inside the loop, allocating an {@code Insets} object
  * per cell on every frame.
  *
+ * <p>The backing image is rendered at the device scale factor (2x on a Retina display),
+ * so the blit is 1:1 with physical pixels and cells stay crisp instead of being
+ * upscaled and blurred. Component coordinates remain logical; only the image is denser.
+ * Headless environments (tests, build agents) have no display, so the scale falls back
+ * to 1.0 and the image is exactly the logical size.
+ *
  * <p>The component is confined to the Swing event dispatch thread. It never reads
  * simulation state directly; the frame pushes an immutable {@link Generation}
  * snapshot in, and repaints only when the snapshot actually changed.
  */
-@SuppressWarnings("serial") // Swing components inherit Serializable; this application never serialises them.
 public final class BoardView extends JPanel {
 
     /**
      * Cells narrower than this are drawn solid. A separator costs one pixel per axis, so
      * below this size it would consume more of the cell than the cell's own colour and
-     * the board reads as a grey mesh rather than as a population.
+     * the board reads as a grey mesh rather than as a population. The threshold is in
+     * logical pixels; the separator itself is scaled with the device.
      */
     private static final int MIN_CELL_SIZE_FOR_GRID = 3;
 
@@ -49,6 +49,10 @@ public final class BoardView extends JPanel {
     private final int rows;
     private final int columns;
     private final int cellSize;
+    /** Cell edge in physical pixels: {@code cellSize} scaled to the display. */
+    private final int scaledCellSize;
+    /** Separator width in physical pixels: one logical pixel scaled to the display. */
+    private final int scaledSeparator;
     private final CellGeometry geometry;
     private final BufferedImage image;
     private final int[] pixels;
@@ -72,10 +76,17 @@ public final class BoardView extends JPanel {
         this.cellSize = cellSize;
         this.geometry = new CellGeometry(rows, columns);
 
-        this.image = new BufferedImage(columns * cellSize, rows * cellSize, BufferedImage.TYPE_INT_RGB);
+        double deviceScale = deviceScale(this);
+        this.scaledCellSize = Math.max(1, (int) Math.round(cellSize * deviceScale));
+        this.scaledSeparator = Math.max(1, (int) Math.round(deviceScale));
+
+        this.image = new BufferedImage(
+                columns * scaledCellSize, rows * scaledCellSize, BufferedImage.TYPE_INT_RGB);
         this.pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
 
-        setPreferredSize(new Dimension(image.getWidth(), image.getHeight()));
+        // The preferred size stays in logical pixels: the component's coordinates are
+        // logical, and only the backing image is denser.
+        setPreferredSize(new Dimension(columns * cellSize, rows * cellSize));
         setMinimumSize(new Dimension(columns, rows));
         setOpaque(true);
         // The margin around a letterboxed board belongs to the window, not the board.
@@ -98,6 +109,29 @@ public final class BoardView extends JPanel {
                 }
             }
         });
+    }
+
+    /**
+     * The device scale factor for the screen the board will be shown on, or 1.0 when
+     * there is no display (headless tests, build agents).
+     *
+     * <p>Queried from the component's graphics configuration, which for a component not
+     * yet added to a window resolves to the default screen. The window is created on the
+     * event dispatch thread and shown on the primary display, so the default screen is
+     * the right answer for this application.
+     */
+    private static double deviceScale(Component component) {
+        try {
+            GraphicsConfiguration gc = component.getGraphicsConfiguration();
+            if (gc == null) {
+                gc = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                        .getDefaultScreenDevice().getDefaultConfiguration();
+            }
+            double scale = gc.getDefaultTransform().getScaleX();
+            return scale > 0 ? scale : 1.0;
+        } catch (HeadlessException e) {
+            return 1.0;
+        }
     }
 
     /**
@@ -145,6 +179,10 @@ public final class BoardView extends JPanel {
      * <p>Stretching to the component bounds instead would make cells non-square whenever
      * the window is not square &mdash; maximising the window turned a 201x201 board into a
      * wide grid of rectangles and skewed the diagonals the simulation produces.
+     *
+     * <p>The image dimensions are physical pixels, but the viewport is in logical
+     * coordinates: the blit maps the denser image into the logical rectangle, and the
+     * display's own transform turns that into a 1:1 physical blit on a high-DPI screen.
      */
     Rectangle viewport() {
         int width = getWidth();
@@ -241,8 +279,8 @@ public final class BoardView extends JPanel {
     }
 
     private void writeCell(int row, int col, int rgb, int inner, int stride) {
-        int y0 = row * cellSize;
-        int x0 = col * cellSize;
+        int y0 = row * scaledCellSize;
+        int x0 = col * scaledCellSize;
         for (int y = 0; y < inner; y++) {
             int offset = (y0 + y) * stride + x0;
             Arrays.fill(pixels, offset, offset + inner, rgb);
@@ -250,12 +288,13 @@ public final class BoardView extends JPanel {
     }
 
     /**
-     * Edge of the coloured part of a cell. One pixel of separator along the trailing edges
-     * only; the previous inset of one pixel on every side left a 4px cell with a 2x2
-     * interior, so three quarters of the board was grid line.
+     * Edge of the coloured part of a cell, in physical pixels. One separator along the
+     * trailing edges only; the previous inset of one pixel on every side left a 4px cell
+     * with a 2x2 interior, so three quarters of the board was grid line.
      */
     private int innerCellSize() {
-        return cellSize - (cellSize >= MIN_CELL_SIZE_FOR_GRID ? 1 : 0);
+        int inner = scaledCellSize - (cellSize >= MIN_CELL_SIZE_FOR_GRID ? scaledSeparator : 0);
+        return Math.max(1, inner);
     }
 
     private static int colorOf(boolean[] alive, boolean[] everAlive, int index) {

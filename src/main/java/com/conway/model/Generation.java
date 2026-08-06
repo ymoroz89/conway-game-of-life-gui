@@ -23,6 +23,12 @@ import java.util.Arrays;
  * <p>Both are stored as flat {@code boolean[]} indexed {@code row * width + col}
  * rather than as {@code Boolean[][]}, which removes ~40k object headers per board
  * and gives the rules engine sequential memory access.
+ *
+ * <p>The population is maintained as a field rather than recomputed on demand. The
+ * status bar reads it at the repaint rate (60 fps), and a scan of the whole board
+ * per frame is redundant work the simulation thread can absorb once per generation
+ * instead. The rules engine folds the count into a pass it already makes, so the
+ * hot path pays nothing extra.
  */
 public final class Generation {
 
@@ -32,14 +38,17 @@ public final class Generation {
     private final boolean[] everAlive;
     private final long number;
     private final ActiveRegion activeRegion;
+    private final int population;
 
-    private Generation(int width, int height, boolean[] alive, boolean[] everAlive, long number, ActiveRegion activeRegion) {
+    private Generation(int width, int height, boolean[] alive, boolean[] everAlive,
+                       long number, ActiveRegion activeRegion, int population) {
         this.width = width;
         this.height = height;
         this.alive = alive;
         this.everAlive = everAlive;
         this.number = number;
         this.activeRegion = activeRegion;
+        this.population = population;
     }
 
     /**
@@ -54,18 +63,20 @@ public final class Generation {
                     "Board dimensions must be positive but were " + width + "x" + height);
         }
         int cells = Math.multiplyExact(width, height);
-        return new Generation(width, height, new boolean[cells], new boolean[cells], 0L, ActiveRegion.EMPTY);
+        return new Generation(width, height, new boolean[cells], new boolean[cells],
+                0L, ActiveRegion.EMPTY, 0);
     }
 
     /**
-     * Wraps caller-supplied arrays and computes the active region.
+     * Wraps caller-supplied arrays and computes the active region and population.
      */
     public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive, long number) {
         int expected = Math.multiplyExact(width, height);
         if (alive.length != expected || everAlive.length != expected) {
             throw new IllegalArgumentException("Array length does not match " + width + "x" + height);
         }
-        return new Generation(width, height, alive, everAlive, number, computeActiveRegion(width, height, alive));
+        return new Generation(width, height, alive, everAlive, number,
+                computeActiveRegion(width, height, alive), countAlive(alive));
     }
 
     /**
@@ -76,12 +87,38 @@ public final class Generation {
      *
      * @throws IllegalArgumentException if the array lengths do not match the dimensions
      */
-    public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive, long number, ActiveRegion activeRegion) {
+    public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive,
+                                   long number, ActiveRegion activeRegion) {
         int expected = Math.multiplyExact(width, height);
         if (alive.length != expected || everAlive.length != expected) {
             throw new IllegalArgumentException("Array length does not match " + width + "x" + height);
         }
-        return new Generation(width, height, alive, everAlive, number, activeRegion);
+        return new Generation(width, height, alive, everAlive, number, activeRegion, countAlive(alive));
+    }
+
+    /**
+     * Wraps caller-supplied arrays with a pre-computed active region and population.
+     *
+     * <p>The caller transfers ownership: after this call it must never read from or
+     * write to {@code alive} or {@code everAlive} again.
+     *
+     * <p>This is the hot path. The rules engine already sweeps the destination arrays
+     * while computing a generation, so it counts the population in that pass and
+     * supplies the result here rather than forcing a second scan.
+     *
+     * @throws IllegalArgumentException if the array lengths do not match the dimensions
+     * @throws IllegalArgumentException if {@code population} is negative
+     */
+    public static Generation adopt(int width, int height, boolean[] alive, boolean[] everAlive,
+                                   long number, ActiveRegion activeRegion, int population) {
+        int expected = Math.multiplyExact(width, height);
+        if (alive.length != expected || everAlive.length != expected) {
+            throw new IllegalArgumentException("Array length does not match " + width + "x" + height);
+        }
+        if (population < 0) {
+            throw new IllegalArgumentException("population must not be negative but was " + population);
+        }
+        return new Generation(width, height, alive, everAlive, number, activeRegion, population);
     }
 
     private static ActiveRegion computeActiveRegion(int width, int height, boolean[] alive) {
@@ -98,6 +135,16 @@ public final class Generation {
             }
         }
         return new ActiveRegion(minRow, maxRow, minCol, maxCol);
+    }
+
+    private static int countAlive(boolean[] alive) {
+        int count = 0;
+        for (boolean cell : alive) {
+            if (cell) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public int width() {
@@ -123,15 +170,9 @@ public final class Generation {
         return everAlive[row * width + col];
     }
 
-    /** Number of currently alive cells. Linear in board size; intended for tests and diagnostics. */
+    /** Number of currently alive cells. Maintained incrementally; O(1). */
     public int population() {
-        int count = 0;
-        for (boolean cell : alive) {
-            if (cell) {
-                count++;
-            }
-        }
-        return count;
+        return population;
     }
 
     /**
@@ -172,6 +213,7 @@ public final class Generation {
         int index = row * width + col;
         newAlive[index] = live;
         newEver[index] = live;
+        // Not the hot path -- recompute both active region and population from scratch.
         return adopt(width, height, newAlive, newEver, number);
     }
 
@@ -200,6 +242,7 @@ public final class Generation {
                 newEver[index] = true;
             }
         }
+        // Not the hot path -- recompute both active region and population from scratch.
         return adopt(width, height, newAlive, newEver, number);
     }
 
@@ -221,6 +264,7 @@ public final class Generation {
         return width == other.width
                 && height == other.height
                 && number == other.number
+                && population == other.population
                 && activeRegion.equals(other.activeRegion)
                 && Arrays.equals(alive, other.alive)
                 && Arrays.equals(everAlive, other.everAlive);
@@ -231,6 +275,7 @@ public final class Generation {
         int result = Integer.hashCode(width);
         result = 31 * result + Integer.hashCode(height);
         result = 31 * result + Long.hashCode(number);
+        result = 31 * result + Integer.hashCode(population);
         result = 31 * result + Arrays.hashCode(alive);
         result = 31 * result + Arrays.hashCode(everAlive);
         return result;
@@ -238,6 +283,6 @@ public final class Generation {
 
     @Override
     public String toString() {
-        return "Generation[" + number + ", " + width + "x" + height + ", population=" + population() + "]";
+        return "Generation[" + number + ", " + width + "x" + height + ", population=" + population + "]";
     }
 }

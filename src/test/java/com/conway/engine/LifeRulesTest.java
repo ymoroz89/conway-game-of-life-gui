@@ -118,7 +118,8 @@ class LifeRulesTest {
     @Test
     @DisplayName("A glider translates by one cell diagonally every four generations")
     void gliderTranslates() throws Exception {
-        Generation start = board(
+
+        Generation result = board(
                 ".O........",
                 "..O.......",
                 "OOO.......",
@@ -129,8 +130,6 @@ class LifeRulesTest {
                 "..........",
                 "..........",
                 "..........");
-
-        Generation result = start;
         for (int i = 0; i < 4; i++) {
             result = rules.next(result, 1);
         }
@@ -222,6 +221,37 @@ class LifeRulesTest {
         assertTrue(next.wasEverAlive(1, 1));
         assertFalse(next.wasEverAlive(0, 0));
     }
+    @Test
+    @DisplayName("The population count matches the rendered board across generations and partition counts")
+    void populationMatchesRenderedBoard() throws Exception {
+        // The population is folded into the ever-alive pass and summed across bands, so it
+        // must agree with a direct count of the rendered board at every partition count.
+        Generation start = board(
+                ".O........",
+                "..O.......",
+                "OOO.......",
+                "..........",
+                "..........",
+                "..........");
+
+        for (int partitions : new int[] {1, 2, 4}) {
+            Generation current = start;
+            for (int i = 0; i < 6; i++) {
+                current = rules.next(current, partitions);
+                int expected = 0;
+                for (String row : render(current)) {
+                    for (int c = 0; c < row.length(); c++) {
+                        if (row.charAt(c) == 'O') {
+                            expected++;
+                        }
+                    }
+                }
+                assertEquals(expected, current.population(),
+                        "population with " + partitions + " partition(s) at generation " + i);
+            }
+        }
+    }
+
     @Test
     void optimizedMatchesReference() throws InterruptedException {
         int width = 50;

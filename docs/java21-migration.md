@@ -95,10 +95,31 @@ against the virtual-thread benchmark confirmed:
 - **No virtual-thread pinning.** Zero `jdk.VirtualThreadPinned` events. The band
   workers never enter a `synchronized` block or native call that would pin a carrier.
 
+## Band-failure hardening
+
+A post-migration review of the Java ≤21 concurrency toolbox
+([`concurrency-features-review.md`](concurrency-features-review.md)) found one
+robustness gap. When a band failed, `LifeRules.next()` abandoned the survivors:
+they were dispatched, then ran to completion *unseen* while the caller unwound with
+an error. Band futures are now cancelled on any failure — whether the fault hit
+band zero on the calling thread or surfaced as `ExecutionException` from a worker —
+so a failed generation stops scheduling new work. The cancellation is hygiene
+rather than a hard stop: band computation never blocks, so the interrupt flag
+cannot cut it short, and the success path is untouched, so there is no performance
+cost.
+
+The Java 19/21 `Future` accessors (`state()`, `resultNow()`, `exceptionNow()`) were
+considered for the join loop and deliberately not adopted: none of them waits, so
+`get()` remains the only tool that joins a running band while preserving the
+`InterruptedException` contract. The per-feature disposition of the whole toolbox —
+including why `ForkJoinPool` and a `Phaser` band redesign stay rejected — is
+recorded in the review document. Structured Concurrency stayed preview-gated in 21
+and is tracked there as a candidate for a later `release=23+` upgrade.
+
 ## Verification
 
-- `mvn test`: 123 tests, 0 failures (125 before; three pool-sizing tests replaced by
-  one).
+- `mvn test`: 124 tests, 0 failures (123 after the migration; the review added one
+  band-failure test).
 - `mvn clean package`: shaded jar builds.
 - `GenerationBenchmark` re-run on the 201×201 board with the virtual executor.
 - GUI smoke launch.

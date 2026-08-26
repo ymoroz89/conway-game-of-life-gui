@@ -103,16 +103,25 @@ public final class LifeRules {
             } catch (RuntimeException e) {
                 // Dispatched bands surface as ExecutionException below and are wrapped. This
                 // one runs on the calling thread, so without wrapping it would escape raw and
-                // a failure would report differently depending on which band hit it.
+                // a failure would report differently depending on which band hit it. The
+                // dispatched bands must not run to completion unseen: mark them cancelled so
+                // a failed generation does not leave wasted work behind.
+                cancelAll(futures);
                 throw new SimulationException("Generation computation failed", e);
             }
 
             for (int i = 1; i < bands; i++) {
                 try {
                     // Future.get supplies the happens-before edge for the dispatched bands;
-                    // band zero was written by this thread, so its writes are already visible.
+                    // band zero was written by this thread, so its writes were already visible.
+                    // The Java 21 accessors (state(), resultNow(), exceptionNow()) cannot
+                    // replace this call: none of them waits, and there is nothing to read
+                    // until the task has actually been joined.
                     bandResults[i] = futures.get(i - 1).get();
                 } catch (ExecutionException e) {
+                    // Whatever has not been joined yet is pure loss in a failed generation,
+                    // so cancel it rather than leaving it to finish unseen.
+                    cancelAll(futures.subList(i, futures.size()));
                     throw new SimulationException("Generation computation failed", e.getCause());
                 }
             }
@@ -126,6 +135,20 @@ public final class LifeRules {
         }
 
         return Generation.adopt(width, height, dst, dstEver, current.number() + 1, nextActive, population);
+    }
+
+    /**
+     * Marks pending band futures as cancelled because a sibling band failed.
+     *
+     * <p>Bands that already completed are no-ops: {@link Future#cancel(boolean)} on a done
+     * task does nothing. The interrupt flag is best-effort &mdash; {@code computeBand} never
+     * blocks, so it cannot be cut short &mdash; but the generation is already lost, and the
+     * alternative is letting the surviving bands run to completion unseen.
+     */
+    private static void cancelAll(List<Future<BandResult>> futures) {
+        for (Future<BandResult> future : futures) {
+            future.cancel(true);
+        }
     }
 
     /**

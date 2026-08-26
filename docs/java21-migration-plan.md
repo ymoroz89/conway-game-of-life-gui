@@ -14,6 +14,7 @@ optimizations.
 | 4 | Concurrency: virtual threads (actor thread + band-worker A/B) | ✅ Done |
 | 5 | GC optimizations: JVM flags documentation + JFR verification | ✅ Done |
 | 6 | Docs, full test suite, benchmark + GUI smoke run | ✅ Done |
+| 7 | Concurrency review (Java ≤21): decision doc + band-failure hardening | ✅ Done |
 
 ---
 
@@ -132,6 +133,31 @@ pinning events.
 
 ---
 
+## Phase 7 — Concurrency review (Java ≤21): hardening
+
+**Goal.** Survey the full Java ≤21 concurrency toolbox against this codebase, record
+what is used / rejected / preview-gated with the reasons, and fix the one gap found.
+
+### Steps
+- [x] `docs/concurrency-features-review.md`: per-feature disposition (in use /
+      rejected / preview-gated) backed by the existing measurement citations
+- [x] `LifeRules.next()`: cancel pending band futures when any band fails, instead
+      of leaving the survivors to run to completion unseen
+- [x] Keep `Future.get()` as the join; record why the Java 19/21
+      `state()/resultNow()/exceptionNow()` accessors cannot replace it
+- [x] New test: a crashed band worker escapes as `SimulationException` with the
+      worker's own cause (`LifeRulesTest.failingDispatchedBandSurfacesWrapped`)
+- [x] Full `mvn test` — 124 tests, 0 failures
+
+### Notes
+- Structured Concurrency stayed preview-only and out (no preview features in this
+  repo); it is recorded as a candidate for a future `release=23+` upgrade, where it
+  is final and needs no flags.
+- `Phaser` (persistent band loops) and `ForkJoinPool` (work stealing) remain
+  rejected for the reasons already measured in `profiling-issues-fixing-progress.md`.
+
+---
+
 ## Tests affected
 
 - Replace `workerPoolIsBoundedByPartitionCount`, `workerPoolGrowsWithPartitionCount`,
@@ -140,3 +166,5 @@ pinning events.
 - Tests that inject an `ExecutorService` (`LifeRulesTest`, `LifeRulesBandingTest`,
   `PartitionEquivalenceTest`) switch to a virtual-thread-per-task executor where that
   is the adopted path.
+- Phase 7: `LifeRulesTest` adds `failingDispatchedBandSurfacesWrapped`, which pins
+  the `SimulationException` wrapping contract for a crashed band worker.

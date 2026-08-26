@@ -1,14 +1,23 @@
 package com.conway.engine;
 
 import static com.conway.testsupport.Boards.board;
+import static com.conway.testsupport.Boards.random;
 import static com.conway.testsupport.Boards.render;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Random;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -272,7 +281,7 @@ class LifeRulesTest {
         assertTrue(gen1.isAlive(11, 11));
         assertFalse(gen1.isAlive(10, 10));
         assertFalse(gen1.isAlive(12, 10));
-        
+
         // Check wasEverAlive
         assertTrue(gen1.wasEverAlive(10, 10));
         assertTrue(gen1.wasEverAlive(11, 9));
@@ -280,4 +289,54 @@ class LifeRulesTest {
         assertTrue(gen1.wasEverAlive(11, 11));
         assertTrue(gen1.wasEverAlive(12, 10));
     }
+
+    @Test
+    @DisplayName("A failing dispatched band is reported as SimulationException with the worker's own cause")
+    void failingDispatchedBandSurfacesWrapped() throws Exception {
+        // Band zero runs on the calling thread and cannot be made to fail from outside,
+        // so the injection hits every dispatched band. The contract this pins is the one
+        // the engine relies on: however a generation fails, it escapes as a
+        // SimulationException whose cause is the worker's own exception, so the engine's
+        // single failure path produces the same diagnostic no matter which band broke.
+        try (ExecutorService failing = failingBandExecutor()) {
+            LifeRules failingRules = new LifeRules(failing);
+            // Dense and tall enough that the requested count is honoured: 120 active rows
+            // allow two bands of 50+ rows, so exactly one task is dispatched and one runs
+            // inline, and the dispatched one fails.
+            Generation start = random(120, 120, new Random(42L), 0.35d);
+
+            SimulationException failure = assertThrows(SimulationException.class,
+                    () -> failingRules.next(start, 4));
+
+            assertEquals(INJECTED_FAILURE_MESSAGE, failure.getCause().getMessage());
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+        }
+    }
+
+    /**
+     * An executor whose workers always fail, so any dispatched band throws on arrival.
+     *
+     * <p>LifeRules.next() dispatches with {@code executor.submit(Callable)}; replacing the
+     * task with one that throws simulates a worker crashing inside {@code computeBand} while
+     * keeping the failure on the worker thread, which is what exercises the
+     * {@code ExecutionException} wrapping path.
+     */
+    private static ExecutorService failingBandExecutor() {
+        return new ThreadPoolExecutor(
+                0, 4, 1L, TimeUnit.MINUTES, new SynchronousQueue<Runnable>()) {
+            @Override
+            public <T> Future<T> submit(Callable<T> task) {
+                // Discard the real task and substitute one that throws. The anonymous call
+                // avoids a raw-super call and keeps the lambda as Callable<T>.
+                return super.submit(new Callable<T>() {
+                    @Override
+                    public T call() {
+                        throw new IllegalStateException(INJECTED_FAILURE_MESSAGE);
+                    }
+                });
+            }
+        };
+    }
+
+    private static final String INJECTED_FAILURE_MESSAGE = "injected band failure";
 }

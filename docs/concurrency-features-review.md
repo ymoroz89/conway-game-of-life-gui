@@ -1,10 +1,11 @@
-# Java 21 concurrency features — review
+# Java ≤25 concurrency features — review
 
-Where the Java ≤21 concurrency toolbox stands against this codebase, recorded after
-the [Java 21 migration](java21-migration.md). Everything here was verified against
-the code rather than assumed. The design is deliberately small and lock-free, so
-most of the toolbox is a better fit elsewhere; what is not used is recorded here
-with the reason, so the decision does not get re-litigated on a whim.
+Where the Java ≤25 concurrency toolbox stands against this codebase, recorded after
+the [Java 25 migration](java25-migration.md) and the [Java 21 migration](java21-migration.md).
+Everything here was verified against the code rather than assumed. The design is
+deliberately small and lock-free, so most of the toolbox is a better fit elsewhere;
+what is not used is recorded here with the reason, so the decision does not get
+re-litigated on a whim.
 
 Last verified against the code on 2026-09-27. The review was first written after the
 migration (2026-08-22) and updated when the band workers moved to a `ForkJoinPool`
@@ -13,9 +14,10 @@ moved back to virtual threads: the `ForkJoinPool` had been chosen on a benchmark
 caller is a platform thread, and was 23% slower in the application
 ([evidence](../README.md#what-the-application-measured)).
 
-Companion documents: [`java21-migration.md`](java21-migration.md) (what changed in
-17 → 21) and [`profiling-issues-fixing-progress.md`](profiling-issues-fixing-progress.md)
-(the measurements that decide where parallelism pays).
+Companion documents: [`java25-migration.md`](java25-migration.md) (what changed in
+21 → 25), [`java21-migration.md`](java21-migration.md) (what changed in 17 → 21),
+and [`profiling-issues-fixing-progress.md`](profiling-issues-fixing-progress.md)
+
 
 ## In use
 
@@ -75,3 +77,9 @@ is exactly the wrapped form the engine's `State.FAILED` / `onError` path expects
   one 12.8 µs pin inside the JDK's own class loading (see the README's JVM tuning section).
 - **Parallelism is a work-distribution choice.** The resulting board is identical at
   every partition count; `PartitionEquivalenceTest` pins that property.
+
+## Measurement tooling (no code impact)
+
+JEP 509 / 518 / 520 (JDK 25) add JFR events for CPU-time profiling of virtual
+threads, cooperative thread sampling, and method-level timing. These are optional
+measurement tooling; nothing in the codebase depends on them.

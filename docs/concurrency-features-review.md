@@ -47,8 +47,9 @@ and [`profiling-issues-fixing-progress.md`](profiling-issues-fixing-progress.md)
 | Java 19 `Future.state() / resultNow() / exceptionNow()` | 19 | ❌ Rejected | None of them waits, so they cannot replace `get()` where a running band may have to be joined; the interrupt contract is `InterruptedException`, which they do not carry. `get()` stays. |
 | `VarHandle` | 9 | ❌ N/A | One `volatile` field is the correct tool for a single writer + many readers |
 | Flow API | 9 | ❌ N/A | Actor + snapshot polling already decouples producer from consumer with no backpressure knobs to turn |
-| `StructuredTaskScope` (JEP 428 / 453) | 21 preview | 📌 Tracked | Closing the scope cancels all subtasks, which would make band-failure cleanup automatic. Gated on the project's no-preview policy: preview forces `--enable-preview` on the compiler **and** surefire, and a preview build runs only on the JDK feature release that compiled it. The API was still in preview in JDK 25 (JEP 505), so raising `release` alone does not lift the gate. The `RecursiveTask` and `Phaser` notes are the counterweight if anyone reopens the band model. |
-| `ScopedValue` | 21 preview | ❌ N/A | No `ThreadLocal`s exist in the codebase to replace |
+| `StructuredTaskScope` (JEP 505, fifth preview) | 25 preview | 📌 Tracked | Closing the scope cancels all subtasks, which would make band-failure cleanup automatic. Still preview in JDK 25 (a sixth preview, JEP 525, is already filed for JDK 26), so the project's no-preview policy keeps it out. Adoption shape recorded in `java25-migration-plan.md` §4: `StructuredTaskScope.open()`, fork bands 1..N−1, keep band 0 on the calling thread, `join()`, and delete the hand-rolled `cancelAll` + both `ExecutionException` catch paths. The `ForkJoinPool`/`Phaser` notes above are the counterweight on upside. |
+| `ScopedValue` (JEP 506, final in JDK 25) | 25 final | ❌ N/A | No `ThreadLocal`s exist in the codebase to replace |
+| `Stable Values` (JEP 502, preview) | 25 preview | ❌ N/A | No lazily-initialised constants to speed up |
 
 ## One gap found and fixed (2026-08): band-failure hygiene
 

@@ -12,12 +12,14 @@ import org.jetbrains.skia.ImageInfo
  * An off-screen Skia bitmap holding the rendered board, shared between the pixel
  * renderer and the Compose [ImageBitmap] the board canvas draws.
  *
- * The backing [ByteArray] is installed once via [org.jetbrains.skia.Bitmap.installPixels]
- * and then mutated in place by [BoardRenderer]'s byte conversion, so no per-frame pixel
- * copy happens. A fresh [ImageBitmap] wrapper is produced per paint because Skia images
- * alias the bitmap storage and must not outlive writes.
+ * Skia's [Bitmap.installPixels] copies the JVM array into native memory at call time
+ * rather than aliasing it, so later mutation of [bytes] is invisible until the array is
+ * installed again. [imageBitmap] therefore re-uploads the buffer on every call, which
+ * is once per rendered frame. The upload is a single native copy of
+ * `pixelWidth * pixelHeight * 4` bytes, the same order of work the Swing renderer paid
+ * for its `BufferedImage` blit, and far cheaper than repainting cell rectangles.
  */
-class BoardImage(pixelWidth: Int, pixelHeight: Int) {
+class BoardImage(val pixelWidth: Int, val pixelHeight: Int) {
 
     private val rowBytes = pixelWidth * 4
     val bytes = ByteArray(pixelWidth * pixelHeight * 4)
@@ -26,16 +28,30 @@ class BoardImage(pixelWidth: Int, pixelHeight: Int) {
         pixelWidth, pixelHeight,
         ColorType.RGBA_8888, ColorAlphaType.PREMUL, ColorSpace.sRGB,
     )
-    private val bitmap = Bitmap()
+
+    /** Internal so tests can read pixels back out of the Skia storage. */
+    internal val bitmap = Bitmap()
 
     init {
         require(pixelWidth > 0 && pixelHeight > 0)
+        upload()
+    }
+
+    /**
+     * A Compose image showing the current contents of [bytes].
+     *
+     * Every call re-installs the pixels first. Without this, the bitmap keeps the copy
+     * Skia made of the (then all-zero) buffer at construction and the board renders as
+     * a black square no matter what the renderer writes.
+     */
+    fun imageBitmap(): ImageBitmap {
+        upload()
+        return bitmap.asComposeImageBitmap()
+    }
+
+    private fun upload() {
         check(bitmap.installPixels(info, bytes, rowBytes)) {
             "Failed to install board pixel storage ${pixelWidth}x$pixelHeight"
         }
     }
-
-    /** A Compose image aliasing the current contents of [bytes]. Each draw call re-reads
-     *  the bitmap storage, so mutations made by the renderer between frames are visible. */
-    fun imageBitmap(): ImageBitmap = bitmap.asComposeImageBitmap()
 }

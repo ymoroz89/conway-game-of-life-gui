@@ -4,13 +4,22 @@ import com.conway.model.Generation
 import kotlin.math.roundToInt
 
 /**
- * Renders a [Generation] into an opaque ARGB `IntArray`, one entry per pixel.
+ * Renders a [Generation] into a premultiplied RGBA byte buffer, four bytes per pixel.
  *
  * This is the Swing-era board component's painting core, made headless: cell colours are
  * written straight into a flat pixel buffer, drawing only the cells whose colour changed
  * since the previous generation, so a repaint is proportional to the change rather than
  * the board area. The caller then scales the buffer once to the viewport. It only touches
  * arrays, so it is unit-testable without a display.
+ *
+ * The buffer is in exactly the layout Skia installs for an `RGBA_8888` image, so
+ * [BoardImage] can wrap it directly. Holding packed ARGB `Int`s here instead would force a
+ * conversion pass over every pixel on every frame, which would cost more than the whole
+ * incremental update it wraps and would throw away the point of diffing at all.
+ *
+ * @param deviceScale physical pixels per logical pixel on the display the board will be
+ *                    shown on. Rendering at the device scale makes the blit 1:1 with
+ *                    physical pixels, so cells stay crisp instead of being upscaled.
  */
 class BoardRenderer(
     val rows: Int,
@@ -20,6 +29,7 @@ class BoardRenderer(
 ) {
     init {
         require(cellSize >= 1) { "cellSize must be at least 1 but was $cellSize" }
+        require(deviceScale > 0.0) { "deviceScale must be positive but was $deviceScale" }
     }
 
     private val scaledCellSize = maxOf(1, (cellSize * deviceScale).roundToInt())
@@ -28,11 +38,19 @@ class BoardRenderer(
     val pixelWidth: Int = columns * scaledCellSize
     val pixelHeight: Int = rows * scaledCellSize
 
-    private val pixels = IntArray(pixelWidth * pixelHeight)
+    /** Byte offset between the start of one pixel row and the next. */
+    private val byteStride = pixelWidth * BYTES_PER_PIXEL
+
+    /**
+     * The rendered board, as premultiplied RGBA bytes in row-major order. Owned by this
+     * renderer and mutated in place; [BoardImage] uploads it to Skia as it stands.
+     */
+    val bytes = ByteArray(pixelWidth * pixelHeight * BYTES_PER_PIXEL)
+
     private var rendered: Generation? = null
 
-    /** Renders [generation] into [pixels], returning it. Only changed cells are rewritten. */
-    fun render(generation: Generation): IntArray {
+    /** Renders [generation] into [bytes], returning it. Only changed cells are rewritten. */
+    fun render(generation: Generation): ByteArray {
         val previous = rendered
         if (previous != null && previous.width == generation.width && previous.height == generation.height) {
             renderChanges(previous, generation)
@@ -40,7 +58,7 @@ class BoardRenderer(
             renderAll(generation)
         }
         rendered = generation
-        return pixels
+        return bytes
     }
 
     /** Redraws every cell, plus the separators and any area the board does not cover. */
@@ -49,17 +67,16 @@ class BoardRenderer(
         val boardColumns = minOf(columns, generation.width)
         val alive = generation.aliveCells()
         val everAlive = generation.everAliveCells()
-        val stride = pixelWidth
         val inner = innerCellSize()
 
         // Covers the separators and any area not written below. Only the full path needs
         // this: separators never change, so an incremental update must not repaint them.
-        pixels.fill(Theme.BOARD_GRID)
+        fillPixels(0, pixelWidth * pixelHeight, Theme.BOARD_GRID)
 
         for (row in 0 until boardRows) {
             val cellRowBase = row * generation.width
             for (col in 0 until boardColumns) {
-                writePixel(row, col, colorOf(alive, everAlive, cellRowBase + col), inner, stride)
+                writeCell(row, col, colorOf(alive, everAlive, cellRowBase + col), inner)
             }
         }
     }
@@ -76,7 +93,6 @@ class BoardRenderer(
         val previousEver = previous.everAliveCells()
         val alive = current.aliveCells()
         val everAlive = current.everAliveCells()
-        val stride = pixelWidth
         val inner = innerCellSize()
         val width = current.width
 
@@ -86,18 +102,35 @@ class BoardRenderer(
                 val index = cellRowBase + col
                 val rgb = colorOf(alive, everAlive, index)
                 if (rgb != colorOf(previousAlive, previousEver, index)) {
-                    writePixel(row, col, rgb, inner, stride)
+                    writeCell(row, col, rgb, inner)
                 }
             }
         }
     }
 
-    private fun writePixel(row: Int, col: Int, rgb: Int, inner: Int, stride: Int) {
+    /** Paints the coloured interior of one cell, [inner] pixels square. */
+    private fun writeCell(row: Int, col: Int, rgb: Int, inner: Int) {
         val y0 = row * scaledCellSize
         val x0 = col * scaledCellSize
         for (y in 0 until inner) {
-            val offset = (y0 + y) * stride + x0
-            pixels.fill(rgb, offset, offset + inner)
+            fillPixels((y0 + y) * byteStride + x0 * BYTES_PER_PIXEL, inner, rgb)
+        }
+    }
+
+    /** Writes [count] consecutive pixels of [rgb] starting at byte offset [start]. */
+    private fun fillPixels(start: Int, count: Int, rgb: Int) {
+        // Board colours are opaque, so premultiplication is the identity and alpha is 255.
+        val r = (rgb shr 16 and 0xFF).toByte()
+        val g = (rgb shr 8 and 0xFF).toByte()
+        val b = (rgb and 0xFF).toByte()
+        val a = 255.toByte()
+        var offset = start
+        repeat(count) {
+            bytes[offset] = r
+            bytes[offset + 1] = g
+            bytes[offset + 2] = b
+            bytes[offset + 3] = a
+            offset += BYTES_PER_PIXEL
         }
     }
 
@@ -125,25 +158,8 @@ class BoardRenderer(
          * board would read as a grey mesh rather than as a population.
          */
         const val MIN_CELL_SIZE_FOR_GRID = 3
-    }
-}
 
-/**
- * Converts an opaque ARGB buffer into the premultiplied RGBA bytes Skia expects for an
- * `RGBA_8888` image, in row-major order with [width] * 4 bytes per row. Writes into [out]
- * (replacing its contents in place) and returns it.
- */
-fun IntArray.toRgbaPremulBytes(width: Int, height: Int, out: ByteArray = ByteArray(size * 4)): ByteArray {
-    check(size == width * height) { "Pixel buffer size ${size} != ${width}x$height" }
-    check(out.size == size * 4) { "Output buffer size ${out.size} != ${size} * 4" }
-    var target = 0
-    for (pixel in this) {
-        // Inputs are opaque, so premultiplication is the identity; alpha is 255.
-        out[target] = (pixel shr 16 and 0xFF).toByte()
-        out[target + 1] = (pixel shr 8 and 0xFF).toByte()
-        out[target + 2] = (pixel and 0xFF).toByte()
-        out[target + 3] = 255.toByte()
-        target += 4
+        /** RGBA_8888: one byte per channel. */
+        internal const val BYTES_PER_PIXEL = 4
     }
-    return out
 }

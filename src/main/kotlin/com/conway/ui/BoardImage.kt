@@ -9,20 +9,23 @@ import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ImageInfo
 
 /**
- * An off-screen Skia bitmap holding the rendered board, shared between the pixel
- * renderer and the Compose [ImageBitmap] the board canvas draws.
+ * An off-screen Skia bitmap showing the rendered board.
+ *
+ * [bytes] is the renderer's own buffer, not a copy: [BoardRenderer] already writes
+ * premultiplied RGBA in Skia's layout, so a frame costs one upload of an already-correct
+ * buffer and no conversion pass. Mirroring it through a second array would mean touching
+ * every pixel every frame, which would dwarf the incremental update it exists to display.
  *
  * Skia's [Bitmap.installPixels] copies the JVM array into native memory at call time
  * rather than aliasing it, so later mutation of [bytes] is invisible until the array is
- * installed again. [imageBitmap] therefore re-uploads the buffer on every call, which
- * is once per rendered frame. The upload is a single native copy of
- * `pixelWidth * pixelHeight * 4` bytes, the same order of work the Swing renderer paid
- * for its `BufferedImage` blit, and far cheaper than repainting cell rectangles.
+ * installed again. [imageBitmap] therefore re-uploads the buffer on every call, which is
+ * once per rendered frame. The upload is a single native copy of
+ * `pixelWidth * pixelHeight * 4` bytes, the same order of work the Swing renderer paid for
+ * its `BufferedImage` blit, and far cheaper than repainting cell rectangles.
  */
-class BoardImage(val pixelWidth: Int, val pixelHeight: Int) {
+class BoardImage(val pixelWidth: Int, val pixelHeight: Int, val bytes: ByteArray) {
 
-    private val rowBytes = pixelWidth * 4
-    val bytes = ByteArray(pixelWidth * pixelHeight * 4)
+    private val rowBytes = pixelWidth * BoardRenderer.BYTES_PER_PIXEL
 
     private val info = ImageInfo(
         pixelWidth, pixelHeight,
@@ -34,6 +37,9 @@ class BoardImage(val pixelWidth: Int, val pixelHeight: Int) {
 
     init {
         require(pixelWidth > 0 && pixelHeight > 0)
+        require(bytes.size == pixelWidth * pixelHeight * BoardRenderer.BYTES_PER_PIXEL) {
+            "Pixel buffer size ${bytes.size} does not match ${pixelWidth}x$pixelHeight"
+        }
         upload()
     }
 

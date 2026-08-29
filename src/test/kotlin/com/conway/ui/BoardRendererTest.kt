@@ -42,9 +42,28 @@ class BoardRendererTest {
         // pixel of the first cell rather than at the origin.
         assertEquals(
             Theme.BOARD_GRID,
-            pixels[(CELL_SIZE - 1) * pixelWidth() + (CELL_SIZE - 1)],
+            pixelAt(pixels, CELL_SIZE - 1, CELL_SIZE - 1),
             "cell separator",
         )
+    }
+
+    @Test
+    @DisplayName("A device scale renders the board at physical pixel density")
+    fun deviceScaleRendersAtPhysicalResolution() {
+        // The Swing board rendered its backing image at the display's scale factor so the
+        // blit was 1:1 with physical pixels and cells stayed crisp. Rendering at the logical
+        // size and letting the toolkit upscale gives back the blur that was fixed there.
+        val retina = BoardRenderer(ROWS, COLUMNS, CELL_SIZE, deviceScale = 2.0)
+
+        assertEquals(COLUMNS * CELL_SIZE * 2, retina.pixelWidth, "buffer width")
+        assertEquals(ROWS * CELL_SIZE * 2, retina.pixelHeight, "buffer height")
+
+        val pixels = retina.render(generation(cells(0), cells(0)))
+
+        // A 4px cell at 2x is 8 physical pixels with a 2px separator on the trailing edges.
+        assertEquals(Theme.BOARD_ALIVE, pixelAt(pixels, 0, 0, retina.pixelWidth), "cell interior")
+        assertEquals(Theme.BOARD_ALIVE, pixelAt(pixels, 5, 5, retina.pixelWidth), "last interior pixel")
+        assertEquals(Theme.BOARD_GRID, pixelAt(pixels, 7, 7, retina.pixelWidth), "scaled separator")
     }
 
     @Test
@@ -145,7 +164,7 @@ class BoardRendererTest {
 
         assertEquals(
             Theme.BOARD_GRID,
-            image[(CELL_SIZE - 1) * pixelWidth() + (CELL_SIZE - 1)],
+            pixelAt(image, CELL_SIZE - 1, CELL_SIZE - 1),
             "separator after an incremental update",
         )
     }
@@ -194,32 +213,48 @@ class BoardRendererTest {
     }
 
     /** Renders with a fresh renderer: a from-scratch draw of one generation. */
-    private fun render(generation: Generation): IntArray =
+    private fun render(generation: Generation): ByteArray =
         BoardRenderer(ROWS, COLUMNS, CELL_SIZE).render(generation)
 
     /** Renders each generation in turn into one renderer, returning the final buffer. */
-    private fun renderSequence(vararg generations: Generation): IntArray {
+    private fun renderSequence(vararg generations: Generation): ByteArray {
         val view = BoardRenderer(ROWS, COLUMNS, CELL_SIZE)
-        var pixels = IntArray(0)
+        var pixels = ByteArray(0)
         for (generation in generations) {
             pixels = view.render(generation)
         }
         return pixels
     }
 
+    /**
+     * The pixel at (x, y) recomposed into the packed ARGB form the theme declares, so the
+     * assertions read against [Theme] rather than against raw RGBA bytes.
+     */
+    private fun pixelAt(pixels: ByteArray, x: Int, y: Int, stride: Int = pixelWidth()): Int {
+        val offset = (y * stride + x) * 4
+        return (pixels[offset + 3].toInt() and 0xFF shl 24) or
+            (pixels[offset].toInt() and 0xFF shl 16) or
+            (pixels[offset + 1].toInt() and 0xFF shl 8) or
+            (pixels[offset + 2].toInt() and 0xFF)
+    }
+
     /** Reads the centre pixel of a cell, clear of the separator. */
-    private fun rgb(pixels: IntArray, row: Int, col: Int): Int =
-        pixels[(row * CELL_SIZE + CELL_SIZE / 2) * pixelWidth() + col * CELL_SIZE + CELL_SIZE / 2]
+    private fun rgb(pixels: ByteArray, row: Int, col: Int): Int = pixelAt(
+        pixels,
+        col * CELL_SIZE + CELL_SIZE / 2,
+        row * CELL_SIZE + CELL_SIZE / 2,
+    )
 
     private fun cellAt(dest: Rect, x: Float, y: Float): Pair<Int, Int>? =
         cellAt(dest, x, y, ROWS, COLUMNS)
 
-    private fun assertImagesEqual(expected: IntArray, actual: IntArray, context: String = "") {
+    private fun assertImagesEqual(expected: ByteArray, actual: ByteArray, context: String = "") {
         assertEquals(expected.size, actual.size, "buffer size $context")
         for (i in expected.indices) {
+            val pixel = i / 4
             assertEquals(
                 expected[i], actual[i],
-                "pixel (${i % pixelWidth()}, ${i / pixelWidth()}) differs $context",
+                "byte ${i % 4} of pixel (${pixel % pixelWidth()}, ${pixel / pixelWidth()}) differs $context",
             )
         }
     }

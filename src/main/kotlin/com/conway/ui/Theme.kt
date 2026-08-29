@@ -5,9 +5,9 @@ import androidx.compose.ui.graphics.Color
 /**
  * Single source of truth for the application's colours.
  *
- * Board colours are held as packed ARGB `Int`s because [BoardRenderer] writes them
- * straight into the `IntArray` backing the board image; the Compose [Color] forms used
- * by the surrounding chrome are derived from the same values, so the board and the
+ * Board colours are held as packed ARGB `Int`s because [BoardRenderer] unpacks them
+ * straight into the RGBA pixel buffer behind the board image; the Compose [Color] forms
+ * used by the surrounding chrome are derived from the same values, so the board and the
  * window can never drift apart.
  */
 object Theme {

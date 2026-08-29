@@ -46,10 +46,13 @@ class LifeRules(private val executor: ExecutorService) {
         }
 
         val bands = bandsFor(partitions, height, active)
-        val bandResults = arrayOfNulls<BandResult>(bands)
+        // Filled in band order, exactly once each. A list of non-null results rather than a
+        // pre-sized nullable array: every band must contribute, and a missing one has to be
+        // a failure rather than a silently under-counted population and active region.
+        val bandResults = ArrayList<BandResult>(bands)
 
         if (bands == 1) {
-            bandResults[0] = computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active)
+            bandResults.add(computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active))
         } else {
             val baseSize = height / bands
             val remainder = height % bands
@@ -78,8 +81,9 @@ class LifeRules(private val executor: ExecutorService) {
             }
 
             try {
-                bandResults[0] =
-                    computeBand(src, srcEver, dst, dstEver, width, height, from[0], to[0], active)
+                bandResults.add(
+                    computeBand(src, srcEver, dst, dstEver, width, height, from[0], to[0], active),
+                )
             } catch (e: RuntimeException) {
                 cancelAll(futures)
                 throw SimulationException("Generation computation failed", e)
@@ -87,7 +91,7 @@ class LifeRules(private val executor: ExecutorService) {
 
             for (i in 1 until bands) {
                 try {
-                    bandResults[i] = futures[i - 1].get()
+                    bandResults.add(futures[i - 1].get())
                 } catch (e: ExecutionException) {
                     cancelAll(futures.subList(i, futures.size))
                     throw SimulationException("Generation computation failed", e.cause ?: e)
@@ -97,8 +101,7 @@ class LifeRules(private val executor: ExecutorService) {
 
         var nextActive = ActiveRegion.EMPTY
         var population = 0
-        for (result in bandResults) {
-            val band = result ?: continue
+        for (band in bandResults) {
             nextActive = nextActive.merge(band.region)
             population += band.population
         }

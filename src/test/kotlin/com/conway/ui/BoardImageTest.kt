@@ -2,7 +2,6 @@ package com.conway.ui
 
 import com.conway.model.Generation
 import org.junit.jupiter.api.Assertions.assertArrayEquals
-import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
@@ -21,7 +20,7 @@ class BoardImageTest {
     @Test
     @DisplayName("Pixels written after construction are visible on the next imageBitmap call")
     fun mutationsAfterConstructionAreVisible() {
-        val image = BoardImage(2, 2)
+        val image = BoardImage(2, 2, ByteArray(2 * 2 * 4))
         val installed = requireNotNull(image.bitmap.readPixels())
         assertArrayEquals(ByteArray(image.bytes.size), installed,
             "A fresh board image should start empty")
@@ -42,7 +41,8 @@ class BoardImageTest {
     @DisplayName("The full render pipeline produces the theme colours in Skia storage")
     fun renderedBoardReachesSkiaStorage() {
         val renderer = BoardRenderer(2, 2, 4)
-        val image = BoardImage(renderer.pixelWidth, renderer.pixelHeight)
+        // The image shows the renderer's own buffer; there is no conversion step between.
+        val image = BoardImage(renderer.pixelWidth, renderer.pixelHeight, renderer.bytes)
 
         // (0, 0) alive, (1, 1) died here, everything else never populated.
         val alive = BooleanArray(4)
@@ -53,7 +53,6 @@ class BoardImageTest {
         val generation = Generation.adopt(2, 2, alive, everAlive, 0L)
 
         renderer.render(generation)
-            .toRgbaPremulBytes(renderer.pixelWidth, renderer.pixelHeight, image.bytes)
         image.imageBitmap()
 
         val readBack = requireNotNull(image.bitmap.readPixels())
@@ -72,7 +71,7 @@ class BoardImageTest {
         return pixels.sliceArray(offset until offset + 4)
     }
 
-    /** The RGBA byte order [toRgbaPremulBytes] writes for an opaque packed-ARGB colour. */
+    /** The RGBA byte order [BoardRenderer] writes for an opaque packed-ARGB colour. */
     private fun rgba(argb: Int): ByteArray = byteArrayOf(
         (argb shr 16 and 0xFF).toByte(),
         (argb shr 8 and 0xFF).toByte(),

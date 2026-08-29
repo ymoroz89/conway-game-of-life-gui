@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import com.conway.model.Generation
@@ -21,8 +22,10 @@ import kotlin.math.roundToInt
  *
  * Rendering mirrors the Swing-era approach: [BoardRenderer] diff-updates a pixel buffer,
  * which is blitted to the screen with nearest-neighbour filtering so cells stay crisp.
- * The renderer and its backing image are rebuilt only when the board dimensions or the
- * cell size change, not on every frame.
+ * The buffer is rendered at the display's physical pixel density, so the blit is 1:1 with
+ * the framebuffer rather than an upscale of a logical-size image. The renderer and its
+ * backing image are rebuilt only when the board dimensions, the cell size or the display
+ * density change, not on every frame.
  */
 @Composable
 fun BoardCanvas(
@@ -33,17 +36,19 @@ fun BoardCanvas(
 ) {
     val gridWidth = generation.width
     val gridHeight = generation.height
+    // Physical pixels per logical pixel: 2.0 on a Retina display, 1.0 elsewhere.
+    val deviceScale = LocalDensity.current.density
 
-    val renderer = remember(gridWidth, gridHeight, cellSize) {
-        BoardRenderer(gridHeight, gridWidth, cellSize)
+    val renderer = remember(gridWidth, gridHeight, cellSize, deviceScale) {
+        BoardRenderer(gridHeight, gridWidth, cellSize, deviceScale.toDouble())
     }
-    val boardImage = remember(gridWidth, gridHeight, cellSize) {
-        BoardImage(renderer.pixelWidth, renderer.pixelHeight)
+    val boardImage = remember(renderer) {
+        BoardImage(renderer.pixelWidth, renderer.pixelHeight, renderer.bytes)
     }
 
-    // Diff-update the shared pixel buffer and mirror it into the shared RGBA storage.
-    val pixels = renderer.render(generation)
-    pixels.toRgbaPremulBytes(renderer.pixelWidth, renderer.pixelHeight, boardImage.bytes)
+    // Diff-update the buffer the board image uploads. The renderer already writes Skia's
+    // layout, so there is nothing to convert between here and the draw below.
+    renderer.render(generation)
     val pixelWidth = renderer.pixelWidth
     val pixelHeight = renderer.pixelHeight
 

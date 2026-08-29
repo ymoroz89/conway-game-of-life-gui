@@ -358,7 +358,7 @@ private fun handle(command: Command) {
      * `runController(boolean, Boolean)` signature, in which four different behaviours
      * were encoded in a flag plus a three-valued `Boolean`.
      */
-    sealed interface Command {
+    private sealed interface Command {
         data object Start : Command
         data object Pause : Command
         data object Step : Command

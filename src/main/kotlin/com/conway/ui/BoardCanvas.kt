@@ -4,7 +4,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.FilterQuality
@@ -46,9 +48,11 @@ fun BoardCanvas(
         BoardImage(renderer.pixelWidth, renderer.pixelHeight, renderer.bytes)
     }
 
-    // Diff-update the buffer the board image uploads. The renderer already writes Skia's
-    // layout, so there is nothing to convert between here and the draw below.
-    renderer.render(generation)
+    // Read in the draw phase rather than captured by the draw lambda, so the draw observes
+    // the board directly and is invalidated whenever it changes. Capturing would tie
+    // redraws to the lambda being recreated, which holds only while Generation is inferred
+    // unstable -- annotating it @Immutable, which it is, would silently freeze the board.
+    val board by rememberUpdatedState(generation)
     val pixelWidth = renderer.pixelWidth
     val pixelHeight = renderer.pixelHeight
 
@@ -68,6 +72,13 @@ fun BoardCanvas(
                 }
             },
     ) {
+        // Diff-update the buffer in the draw phase, not during composition. The renderer
+        // holds the previous generation as state and shares its buffer with the board
+        // image; mutating them from a composition -- which Compose may skip, restart or
+        // abandon -- would let the two drift apart. The renderer already writes Skia's
+        // layout, so there is nothing to convert between here and the blit.
+        renderer.render(board)
+
         letterbox(size.width, size.height, pixelWidth, pixelHeight)?.let { dest ->
             val image = boardImage.imageBitmap()
             drawImage(

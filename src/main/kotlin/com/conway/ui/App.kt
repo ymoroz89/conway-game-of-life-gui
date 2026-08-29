@@ -55,6 +55,9 @@ fun App(config: LifeConfig, onClose: () -> Unit) {
     }
 
     fun replaceEngine(newCells: Int) {
+        // Rebuilding discards the simulation, so re-selecting the current size must be a
+        // no-op rather than a silent reset of the user's board.
+        if (newCells == gridSizeCells) return
         val old = engine
         gridSizeCells = newCells
         engine = createEngine(newCells, config)
@@ -88,14 +91,9 @@ fun App(config: LifeConfig, onClose: () -> Unit) {
         }
     }
 
-    val recommendedFor: (Int) -> Int = { cells ->
-        if (cells == config.gridSize) {
-            config.defaultPartitions
-        } else {
-            PartitionPlanner.recommend(cells, config.maxPartitions)
-        }
+    var partitionSelection by remember(engine) {
+        mutableStateOf(defaultPartitionsFor(gridSizeCells, config))
     }
-    var partitionSelection by remember(engine) { mutableStateOf(recommendedFor(gridSizeCells)) }
     LaunchedEffect(partitionSelection) { engine.setPartitions(partitionSelection) }
 
     val running = engineState.value == SimulationEngine.State.RUNNING
@@ -270,14 +268,27 @@ private fun StatusBar(snapshot: EngineSnapshot, state: SimulationEngine.State) {
     }
 }
 
+/**
+ * The band ceiling for a board of [gridSize] cells. More bands than rows would produce
+ * empty work units, so a smaller board lowers the ceiling with it rather than offering a
+ * count the board cannot fill.
+ */
+internal fun maxPartitionsFor(gridSize: Int, config: LifeConfig): Int =
+    minOf(config.maxPartitions, gridSize)
+
+/**
+ * The partition count a board of [gridSize] should start on. The configured board keeps
+ * whatever was configured for it; any other size is sized by the planner.
+ */
+internal fun defaultPartitionsFor(gridSize: Int, config: LifeConfig): Int =
+    if (gridSize == config.gridSize) config.defaultPartitions
+    else PartitionPlanner.recommend(gridSize, maxPartitionsFor(gridSize, config))
+
 /** Builds an engine for [gridSize], applying the recommended partition count and seeding
  *  the historical starting board (two Gosper glider guns). */
 internal fun createEngine(gridSize: Int, config: LifeConfig): SimulationEngine {
-    val engine = SimulationEngine(gridSize, gridSize, config.maxPartitions)
-    engine.setPartitions(
-        if (gridSize == config.gridSize) config.defaultPartitions
-        else PartitionPlanner.recommend(gridSize, config.maxPartitions),
-    )
+    val engine = SimulationEngine(gridSize, gridSize, maxPartitionsFor(gridSize, config))
+    engine.setPartitions(defaultPartitionsFor(gridSize, config))
     SimulationSeeder.seedBoard(engine, gridSize)
     return engine
 }

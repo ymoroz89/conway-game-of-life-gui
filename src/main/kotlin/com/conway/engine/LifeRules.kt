@@ -116,6 +116,13 @@ class LifeRules(private val executor: ExecutorService) {
         }
     }
 
+    /**
+     * Only [bandsFor] lives here. The Java original made all of the helpers `static`, but a
+     * Kotlin companion is an object with an instance, so moving [computeBand] and [ruleAt]
+     * in would route the hot path through a synthetic accessor and a receiver it does not
+     * need. [bandsFor] earns the hop because it is a pure decision function the banding
+     * tests call directly; the per-cell work stays private to the class.
+     */
     companion object {
         /**
          * How many bands to actually split this generation across. The requested count is

@@ -4,9 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.FilterQuality
@@ -28,16 +26,22 @@ import kotlin.math.roundToInt
  * the framebuffer rather than an upscale of a logical-size image. The renderer and its
  * backing image are rebuilt only when the board dimensions, the cell size or the display
  * density change, not on every frame.
+ *
+ * [generation] is a lambda, invoked in the draw phase. The board therefore invalidates
+ * this composable's draw and nothing else: a new generation costs one repaint, not a
+ * recomposition. That is also why the grid extents are passed separately -- sizing the
+ * renderer from the board would mean reading it during composition, which is exactly the
+ * subscription this signature avoids.
  */
 @Composable
 fun BoardCanvas(
-    generation: Generation,
+    gridWidth: Int,
+    gridHeight: Int,
+    generation: () -> Generation,
     cellSize: Int,
     onCellPress: (row: Int, col: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val gridWidth = generation.width
-    val gridHeight = generation.height
     // Physical pixels per logical pixel: 2.0 on a Retina display, 1.0 elsewhere.
     val deviceScale = LocalDensity.current.density
 
@@ -48,11 +52,6 @@ fun BoardCanvas(
         BoardImage(renderer.pixelWidth, renderer.pixelHeight, renderer.bytes)
     }
 
-    // Read in the draw phase rather than captured by the draw lambda, so the draw observes
-    // the board directly and is invalidated whenever it changes. Capturing would tie
-    // redraws to the lambda being recreated, which holds only while Generation is inferred
-    // unstable -- annotating it @Immutable, which it is, would silently freeze the board.
-    val board by rememberUpdatedState(generation)
     val pixelWidth = renderer.pixelWidth
     val pixelHeight = renderer.pixelHeight
 
@@ -77,7 +76,11 @@ fun BoardCanvas(
         // image; mutating them from a composition -- which Compose may skip, restart or
         // abandon -- would let the two drift apart. The renderer already writes Skia's
         // layout, so there is nothing to convert between here and the blit.
-        renderer.render(board)
+        //
+        // Calling [generation] here, rather than capturing a Generation, is what subscribes
+        // the draw to the render-loop state: a new board invalidates this draw and nothing
+        // else. Capturing would instead tie redraws to the composable being recomposed.
+        renderer.render(generation())
 
         letterbox(size.width, size.height, pixelWidth, pixelHeight)?.let { dest ->
             val image = boardImage.imageBitmap()

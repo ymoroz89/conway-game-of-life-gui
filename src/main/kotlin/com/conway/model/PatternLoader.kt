@@ -1,6 +1,7 @@
 package com.conway.model
 
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.UncheckedIOException
 import java.nio.charset.StandardCharsets
@@ -16,18 +17,23 @@ object PatternLoader {
      * @throws IllegalArgumentException if the resource does not exist or is malformed
      * @throws UncheckedIOException     if the resource cannot be read
      */
-    @Throws(UncheckedIOException::class)
     fun fromResource(resourcePath: String): Pattern {
-        requireNotNull(resourcePath) { "resourcePath" }
         val stream = PatternLoader::class.java.getResourceAsStream(resourcePath)
             ?: throw IllegalArgumentException("Pattern resource not found: $resourcePath")
 
-        stream.use {
-            val lines = BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).use { reader ->
-                generateSequence(reader::readLine).toList()
+        // Kotlin has no checked exceptions, so an IOException here would otherwise escape
+        // raw and unattributed. Wrapping it keeps the failure naming the resource that
+        // could not be read, which is the contract this function documents.
+        val lines = try {
+            stream.use {
+                BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).use { reader ->
+                    generateSequence(reader::readLine).toList()
+                }
             }
-            return Pattern.parse(nameOf(resourcePath), lines)
+        } catch (e: IOException) {
+            throw UncheckedIOException("Failed to read pattern resource $resourcePath", e)
         }
+        return Pattern.parse(nameOf(resourcePath), lines)
     }
 
     private fun nameOf(resourcePath: String): String {

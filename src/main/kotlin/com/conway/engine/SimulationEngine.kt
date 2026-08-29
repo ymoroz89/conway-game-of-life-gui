@@ -43,18 +43,24 @@ class SimulationEngine(
     val maxPartitions: Int,
 ) : AutoCloseable {
 
+    init {
+        // First statement in the class body, before anything is allocated. Kotlin runs
+        // initialisers in declaration order, so validating any later would mean a rejected
+        // argument still left a started simulation thread and a worker executor behind that
+        // no caller has a reference to close.
+        require(maxPartitions >= 1) { "maxPartitions must be at least 1 but was $maxPartitions" }
+    }
+
     private val commands: BlockingQueue<Command> = LinkedBlockingQueue()
     private val listeners = CopyOnWriteArrayList<EngineListener>()
     private val closed = AtomicBoolean()
     private val workers: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
     private val rules: LifeRules = LifeRules(workers)
-    private val simulationThread: Thread =
-        Thread.ofVirtual().name("conway-simulation").start { runLoop() }
 
     /** The single publication point; written only by the simulation thread (and once by
      *  the constructor), read by any thread. */
     @Volatile
-    private var published: EngineSnapshot
+    private var published: EngineSnapshot = EngineSnapshot.initial(width, height)
 
     /**
      * Lifecycle latch. A separate volatile rather than part of [published]: it is written by
@@ -66,7 +72,7 @@ class SimulationEngine(
         private set
 
     // ---- Simulation-thread-confined state. Never read or written from anywhere else. ----
-    private var board: Generation
+    private var board: Generation = published.generation
     private var running = false
     private var shutdownRequested = false
     private var partitions = INITIAL_PARTITIONS
@@ -74,11 +80,14 @@ class SimulationEngine(
     private var runStartNanos = 0L
     private var elapsedNanos = 0L
 
-    init {
-        require(maxPartitions >= 1) { "maxPartitions must be at least 1 but was $maxPartitions" }
-        this.published = EngineSnapshot.initial(width, height)
-        this.board = published.generation
-    }
+    /**
+     * Declared last, deliberately. Kotlin runs initialisers in declaration order, so
+     * starting the thread any earlier would publish `this` to another thread while the
+     * state that thread reads -- [published], [board], [partitions] -- still held its
+     * default value.
+     */
+    private val simulationThread: Thread =
+        Thread.ofVirtual().name("conway-simulation").start { runLoop() }
 
     companion object {
         private val LOG = LoggerFactory.getLogger(SimulationEngine::class.java)
@@ -125,7 +134,7 @@ class SimulationEngine(
 
     /** Stamps a [pattern] onto the board, clipping anything that falls outside it. */
     fun place(pattern: Pattern, row: Int, col: Int) =
-        submit(Command.PlacePattern(requireNotNull(pattern) { "pattern" }, row, col))
+        submit(Command.PlacePattern(pattern, row, col))
 
     /**
      * Sets how many row bands each generation is split into. The change is applied by the
@@ -151,7 +160,7 @@ class SimulationEngine(
     fun stats(): SimulationStats = published.stats
 
     fun addListener(listener: EngineListener) {
-        listeners.add(requireNotNull(listener) { "listener" })
+        listeners.add(listener)
     }
 
     /**

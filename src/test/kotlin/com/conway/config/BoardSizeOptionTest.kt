@@ -14,11 +14,10 @@ class BoardSizeOptionTest {
     @CsvSource("201, 200", "401, 400", "801, 800")
     @DisplayName("Presets simulate an odd grid but display the round number")
     fun presetsDisplayRoundNumbers(cells: Int, label: String) {
-        val option = BoardSizeOption.find(BoardSizeOption.options(201), cells)
+        val option = optionFor(BoardSizeOption.options(201), cells)
 
         assertEquals(cells, option.cells, "the simulated grid")
         assertEquals(label, option.label, "what the control shows")
-        assertEquals(label, option.toString(), "the control renders toString()")
     }
 
     @Test
@@ -42,7 +41,7 @@ class BoardSizeOptionTest {
         assertEquals(listOf(201, 401, 801, 1601), options.map { it.cells })
         assertEquals(
             "1601",
-            BoardSizeOption.find(options, 1601).label,
+            optionFor(options, 1601).label,
             "a size with no round equivalent is labelled with its actual value",
         )
     }
@@ -77,15 +76,15 @@ class BoardSizeOptionTest {
     }
 
     @Test
-    @DisplayName("Every offered size can be looked up; unknown sizes are rejected")
-    fun findLocatesOfferedSizesOnly() {
+    @DisplayName("Each offered size appears exactly once, so selection is unambiguous")
+    fun everyOfferedSizeIsDistinct() {
+        // The board control selects by comparing cell counts, so two options sharing one
+        // would both light up.
         val options = BoardSizeOption.options(201)
 
+        assertEquals(options.size, options.map { it.cells }.toSet().size)
         for (option in options) {
-            assertTrue(BoardSizeOption.find(options, option.cells) === option)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            BoardSizeOption.find(options, 12345)
+            assertTrue(optionFor(options, option.cells) === option)
         }
     }
 
@@ -99,4 +98,11 @@ class BoardSizeOptionTest {
         // types make that input unrepresentable at compile time, so there is nothing left
         // to test: the compiler now provides the guarantee the assertion used to pin.
     }
+
+    /**
+     * The lookup the Swing spinner needed as production code. The Compose control selects
+     * by comparing cell counts directly, so it survives only here, as a test helper.
+     */
+    private fun optionFor(options: List<BoardSizeOption>, cells: Int): BoardSizeOption =
+        options.single { it.cells == cells }
 }

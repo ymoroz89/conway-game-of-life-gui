@@ -113,6 +113,41 @@ class BoardRendererTest {
     }
 
     @Test
+    @DisplayName("Every point inside the board maps to a valid cell")
+    fun everyPointInsideTheBoardMapsWithinBounds() {
+        // A tap must never produce an index the board cannot accept: the engine ignores
+        // out-of-range toggles, but a row or column of `rows` would silently target nothing.
+        // Swept across viewport sizes that do not divide evenly by the cell count, which is
+        // where the rounding in the mapping would show up.
+        for (extent in intArrayOf(20, 37, 200, 803, 1000)) {
+            val dest = letterbox(extent.toFloat(), extent.toFloat(), pixelWidth(), pixelHeight())!!
+            var x = dest.left
+            while (x < dest.right) {
+                val cell = cellAt(dest, x, dest.top)
+                assertTrue(
+                    cell != null && cell.second in 0 until COLUMNS,
+                    "x=$x in a ${extent}px viewport mapped to $cell",
+                )
+                x += 1f
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Points on and past the far edge report no cell rather than an invalid index")
+    fun pastTheLastCellReportsNoCell() {
+        // The far edge is exclusive: returning the cell *count* here would be one past the
+        // last valid index and would read out of bounds downstream.
+        val dest = letterbox(400f, 200f, pixelWidth(), pixelHeight())!!
+
+        assertNull(cellAt(dest, dest.right, dest.top), "the right edge itself")
+        assertNull(cellAt(dest, dest.left, dest.bottom), "the bottom edge itself")
+        assertNull(cellAt(dest, 5_000f, 100f), "far past the right edge")
+        assertNull(cellAt(dest, dest.left - 1f, dest.top), "left of the board")
+        assertNull(cellAt(dest, dest.left, dest.top - 1f), "above the board")
+    }
+
+    @Test
     @DisplayName("Rendering a sequence incrementally matches rendering the last board from scratch")
     fun incrementalRenderMatchesFullRender() {
         // The renderer updates the buffer as a difference against the previous generation
@@ -150,6 +185,28 @@ class BoardRendererTest {
 
             assertImagesEqual(fresh, stepped, "step $step")
         }
+    }
+
+    @Test
+    @DisplayName("Re-rendering the same generation touches nothing")
+    fun redrawingAnUnchangedGenerationIsANoOp() {
+        // A draw is not always caused by a new generation: a resize or a re-layout repaints
+        // a board that has not moved. Without the identity check that costs a full
+        // rows x columns diff that writes nothing. Scribbling on the buffer and asserting
+        // the scribble survives pins the no-op directly, rather than timing it.
+        val view = BoardRenderer(ROWS, COLUMNS, CELL_SIZE)
+        val board = generation(cells(0), cells(0))
+
+        val pixels = view.render(board)
+        val sentinel: Byte = 0x5A
+        pixels[0] = sentinel
+
+        assertEquals(sentinel, view.render(board)[0], "an unchanged generation must not be repainted")
+
+        // A genuinely new generation still repaints, so the fast path cannot swallow one.
+        // (0, 0) dies but stays ever-alive, so it must go from alive to the trail colour.
+        view.render(generation(cells(11), cells(0, 11)))
+        assertEquals(Theme.BOARD_TRAIL, rgb(pixels, 0, 0), "a changed generation must repaint")
     }
 
     @Test

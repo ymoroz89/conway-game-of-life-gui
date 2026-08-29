@@ -11,7 +11,6 @@ package com.conway.config
 data class BoardSizeOption(val cells: Int, val label: String) {
     init {
         require(cells > 0) { "cells must be positive but was $cells" }
-        requireNotNull(label) { "label" }
     }
 
     /**
@@ -43,12 +42,5 @@ data class BoardSizeOption(val cells: Int, val label: String) {
             // ArrayList, which callers could mutate, whereas copyOf is genuinely immutable.
             return java.util.List.copyOf(options)
         }
-
-        /** The option for [cells]. @throws IllegalArgumentException if no option has that size. */
-        fun find(options: List<BoardSizeOption>, cells: Int): BoardSizeOption =
-            options.firstOrNull { it.cells == cells }
-                ?: throw IllegalArgumentException("No option for $cells cells")
     }
-
-    override fun toString() = label
 }

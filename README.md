@@ -49,7 +49,7 @@ from the Gradle command line to the application JVM:
 | --- | --- | --- |
 | `conway.gridSize` | `201` | Board width and height in cells; also the size selected on startup. A value that is not one of the presets is added to the board-size control rather than replaced |
 | `conway.boardSizePx` | `1000` | Target board size in pixels; cell size is derived |
-| `conway.targetFps` | `60` | Render-loop rate, independent of the simulation rate |
+| `conway.targetFps` | `60` | Upper bound on the render-loop rate, independent of the simulation rate and of the display's refresh rate |
 | `conway.maxPartitions` | `min(gridSize, 2 x cores)` | Upper bound for the partition control |
 | `conway.partitions` | chosen per board and machine | Partition count to start with; overrides the recommendation |
 | `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the recommendation |
@@ -74,14 +74,18 @@ architecture carried over from the original Java/Swing codebase unchanged.
   disjoint slices, so no synchronisation is needed between workers; `Future.get()`
   supplies the happens-before edge. A failing band aborts the generation rather than
   silently producing a wrong board.
-- **`BoardRenderer`** diff-updates an `IntArray` pixel buffer (one entry per physical
-  pixel) and mirrors it into Skia-managed RGBA storage; `BoardCanvas` draws it with a
-  single nearest-neighbour scaled blit, letterboxed so cells stay square and crisp.
-  The renderer and its backing image are rebuilt only when the board dimensions or
-  the cell size change, not on every frame.
-- **`App`** pulls the newest snapshot inside a `withFrameNanos` render loop - the
-  Compose analogue of the old Swing timer. The simulation is not throttled by the
-  frame rate, and the frame rate is not swamped by the simulation.
+- **`BoardRenderer`** diff-updates a `ByteArray` of premultiplied RGBA pixels, written
+  directly in the layout Skia installs so a frame costs one upload and no conversion
+  pass; `BoardCanvas` draws it with a single nearest-neighbour scaled blit, letterboxed
+  so cells stay square and crisp. The renderer and its backing image are rebuilt only
+  when the board dimensions, the cell size or the display density change, not on every
+  frame, and re-rendering a generation already on screen is a no-op.
+- **`App`** pulls the newest snapshot inside a `withFrameNanos` render loop, rate-limited
+  by `FramePacer` - together, the Compose analogue of the old Swing timer. The simulation
+  is not throttled by the frame rate, and the frame rate is not swamped by the
+  simulation. The snapshot is held in referentially-compared state and read in the draw
+  phase, so a new generation invalidates the board's draw alone rather than recomposing
+  the window.
 
 The grid is bounded, not toroidal: neighbours off the edge count as dead.
 
@@ -110,6 +114,17 @@ mutable state between workers.
 # or with arguments: grid size, generations per measurement, executor mode
 ./gradlew bench --args="401 300 virtual"
 ```
+
+The render path has its own headless harness, and both benchmarks take a Flight Recorder
+recording with `-Pjfr`:
+
+```bash
+./gradlew renderBench
+./gradlew bench -Pjfr
+```
+
+[docs/performance-tooling.md](docs/performance-tooling.md) documents all of it, including
+the Compose compiler's skippability report and how to compare a change against a baseline.
 
 Measured on a 201x201 board, 10 available cores, best of 5 runs of 300 generations:
 

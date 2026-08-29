@@ -49,9 +49,23 @@ class BoardRenderer(
 
     private var rendered: Generation? = null
 
-    /** Renders [generation] into [bytes], returning it. Only changed cells are rewritten. */
+    /**
+     * Renders [generation] into [bytes], returning it.
+     *
+     * Three paths, cheapest first. If the buffer already shows this generation there is
+     * nothing to do, which covers every draw caused by a resize, a re-layout or a repaint
+     * of an unchanged board. If the previous generation is the same size, only the cells
+     * whose colour differs are rewritten. Otherwise the whole buffer is redrawn.
+     *
+     * The first test is reference identity, and that is exact rather than approximate:
+     * generations are immutable and the engine publishes a fresh instance for every
+     * change, so the same instance means the same pixels.
+     */
     fun render(generation: Generation): ByteArray {
         val previous = rendered
+        if (previous === generation) {
+            return bytes
+        }
         if (previous != null && previous.width == generation.width && previous.height == generation.height) {
             renderChanges(previous, generation)
         } else {

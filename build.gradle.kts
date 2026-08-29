@@ -51,6 +51,21 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+// Compose compiler diagnostics. Opt-in, because they force a full recompile and are only
+// wanted when a recomposition question is actually being asked:
+//
+//   ./gradlew compileKotlin --rerun-tasks -PcomposeReports
+//
+// The reports say, per composable, whether it is skippable and whether each parameter is
+// stable -- which is what decides how much work a state change actually causes. That is a
+// static answer, and cheaper than instrumenting a running UI to count recompositions.
+if (project.hasProperty("composeReports")) {
+    composeCompiler {
+        reportsDestination = layout.buildDirectory.dir("compose-reports")
+        metricsDestination = layout.buildDirectory.dir("compose-metrics")
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
     // Engine tests are headless; nothing here needs a display or the Compose toolkit.
@@ -72,6 +87,16 @@ tasks.register<JavaExec>("bench") {
     classpath = mainRuntimeClasspath
 }
 
+// Headless measurement of the two per-frame costs on the render path. Usage:
+//   ./gradlew renderBench
+//   ./gradlew renderBench --args="201 801"
+tasks.register<JavaExec>("renderBench") {
+    group = "verification"
+    description = "Runs the headless render-path (snapshot equality and repaint) benchmark."
+    mainClass.set("com.conway.bench.RenderPathBenchmarkKt")
+    classpath = mainRuntimeClasspath
+}
+
 // Forward -Dconway.* (and -Dconway.log.*) properties from the Gradle command line to the
 // application JVM, so `./gradlew run -Dconway.gridSize=401` configures the app the same
 // way it always has. Applies to every JavaExec task, including `run` and `bench`.
@@ -79,6 +104,31 @@ tasks.withType<JavaExec>().configureEach {
     System.getProperties()
         .filterKeys { (it as String).startsWith("conway.") }
         .forEach { (key, value) -> systemProperty(key as String, value as String) }
+
+    // Flight Recorder, opt-in. Gradle's own -Dorg.gradle.jvmargs configures the daemon, not
+    // the forked JVM, so the recording has to be attached to the task itself:
+    //
+    //   ./gradlew bench -Pjfr
+    //   ./gradlew run -Pjfr=duration=30s
+    //
+    // The value is passed to StartFlightRecording verbatim, so any of its options work.
+    // Recordings land in build/jfr/<task>.jfr; read them with `jfr summary` or JMC.
+    if (project.hasProperty("jfr")) {
+        val options = (project.property("jfr") as String).ifBlank { "duration=30s" }
+        val recording = layout.buildDirectory.file("jfr/$name.jfr").get().asFile
+        doFirst { recording.parentFile.mkdirs() }
+        // An argument provider rather than jvmArgs(...): the Compose plugin assigns the
+        // `run` task's jvmArgs from its own application block, which replaces anything set
+        // here. Providers are additive and resolved at execution time, so they survive it.
+        jvmArgumentProviders.add(
+            CommandLineArgumentProvider {
+                listOf(
+                    "-XX:StartFlightRecording=$options," +
+                        "filename=${recording.absolutePath},settings=profile",
+                )
+            },
+        )
+    }
 }
 
 

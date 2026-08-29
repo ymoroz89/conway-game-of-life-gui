@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.AfterEach
@@ -315,6 +316,33 @@ class SimulationEngineTest {
                     "stats should report the requested partition count")
                 assertNotEquals(SimulationEngine.State.FAILED, large.state)
             }
+        }
+    }
+
+    @Test
+    @DisplayName("An invalid partition ceiling is rejected before any thread is started")
+    fun invalidMaxPartitionsIsRejectedBeforeAllocating() {
+        // Kotlin runs initialisers in declaration order, so the check has to come before the
+        // executor and the simulation thread are created. When it did not, the constructor
+        // threw but left both running with no reference left to close them.
+        for (invalid in intArrayOf(0, -1)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                SimulationEngine(SIZE, SIZE, invalid)
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("The board is fully initialised before the simulation thread reads it")
+    fun boardIsInitialisedBeforeTheThreadStarts() {
+        // The simulation thread must not observe a default-valued board or partition count.
+        // Constructing and immediately stepping is the tightest race available from here.
+        SimulationEngine(SIZE, SIZE, 4).use { fresh ->
+            fresh.step()
+            assertTrue(fresh.sync(TIMEOUT.seconds, TimeUnit.SECONDS))
+            assertEquals(1L, fresh.currentGeneration().number)
+            assertEquals(SIZE, fresh.currentGeneration().width)
+            assertNotEquals(SimulationEngine.State.FAILED, fresh.state)
         }
     }
 

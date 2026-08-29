@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory
 class LifeConfig private constructor(
     val gridSize: Int,
     private val targetBoardSizePx: Int,
+    val targetFps: Int,
     val maxPartitions: Int,
     val defaultPartitions: Int,
 ) {
@@ -28,9 +29,6 @@ class LifeConfig private constructor(
         return maxOf(1, targetBoardSizePx / gridSize)
     }
 
-    /** Board edge length in pixels. */
-    val boardSizePx: Int get() = cellSizePx * gridSize
-
     companion object {
         private val LOG = LoggerFactory.getLogger(LifeConfig::class.java)
 
@@ -38,11 +36,17 @@ class LifeConfig private constructor(
 
         private const val DEFAULT_GRID_SIZE = 201
         private const val DEFAULT_BOARD_SIZE_PX = 1000
+        private const val DEFAULT_TARGET_FPS = 60
 
         /** Reads configuration from system properties, falling back to defaults. */
         fun fromSystemProperties(): LifeConfig {
             val gridSize = intProperty("gridSize", DEFAULT_GRID_SIZE, 3, 10_000)
             val boardSizePx = intProperty("boardSizePx", DEFAULT_BOARD_SIZE_PX, 50, 20_000)
+
+            // A ceiling on the render loop, not a promise: the loop runs on the display's
+            // frame clock and simply skips frames to hold this rate. Configurable so the
+            // render cost can be pinned independently of the display's refresh rate.
+            val targetFps = intProperty("targetFps", DEFAULT_TARGET_FPS, 1, 240)
 
             // More partitions than rows would produce empty work units, and more than a small
             // multiple of the core count adds scheduling overhead without adding parallelism.
@@ -57,12 +61,12 @@ class LifeConfig private constructor(
             val defaultPartitions = intProperty("partitions", recommended, 1, maxPartitions)
 
             val config = LifeConfig(
-                gridSize, boardSizePx, maxPartitions, defaultPartitions,
+                gridSize, boardSizePx, targetFps, maxPartitions, defaultPartitions,
             )
             LOG.info(
-                "Configuration: grid {}x{}, cell {}px, partitions {} of at " +
+                "Configuration: grid {}x{}, cell {}px, target {} fps, partitions {} of at " +
                     "most {} ({} cores available)",
-                gridSize, gridSize, config.cellSizePx,
+                gridSize, gridSize, config.cellSizePx, targetFps,
                 defaultPartitions, maxPartitions, Runtime.getRuntime().availableProcessors(),
             )
             return config

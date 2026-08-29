@@ -62,21 +62,6 @@ class Generation private constructor(
             )
         }
 
-        /** Wraps caller-supplied arrays with a pre-computed active region. */
-        fun adopt(
-            width: Int, height: Int,
-            alive: BooleanArray, everAlive: BooleanArray,
-            number: Long, activeRegion: ActiveRegion,
-        ): Generation {
-            val expected = Math.multiplyExact(width, height)
-            require(alive.size == expected && everAlive.size == expected) {
-                "Array length does not match ${width}x$height"
-            }
-            return Generation(
-                width, height, alive, everAlive, number, activeRegion, countAlive(alive),
-            )
-        }
-
         /**
          * Wraps caller-supplied arrays with a pre-computed active region and population.
          *

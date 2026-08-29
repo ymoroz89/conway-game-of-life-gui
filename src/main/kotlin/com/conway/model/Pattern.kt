@@ -26,9 +26,6 @@ class Pattern private constructor(
         private const val COMMENT = '!'
 
         fun parse(name: String, lines: List<String>): Pattern {
-            requireNotNull(name) { "name" }
-            requireNotNull(lines) { "lines" }
-
             val rows = ArrayList<String>()
             for (line in lines) {
                 if (!line.startsWith(COMMENT.toString())) {

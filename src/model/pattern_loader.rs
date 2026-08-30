@@ -1,7 +1,7 @@
 use super::pattern::{Pattern, PatternError};
 
 /// The Gosper glider gun shipped with the application, embedded into the
-/// binary at compile time from `rust/resources/patterns`.
+/// binary at compile time from `resources/patterns`.
 pub const GOSPER_GLIDER_GUN_CELLS: &str =
     include_str!("../../resources/patterns/gosper-glider-gun.cells");
 

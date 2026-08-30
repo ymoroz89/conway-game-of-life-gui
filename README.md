@@ -5,12 +5,12 @@ in **Rust** (backend + GUI) — a single-writer actor engine, immutable
 snapshots, band-parallel rule evaluation, and a dark-themed GUI built on
 [egui/eframe](https://github.com/emilk/egui).
 
-The whole application lives in [rust/](rust/).
+The application lives in this repository root: [Cargo.toml](Cargo.toml), [src/](src/)
+and [resources/](resources/).
 
 ## Building and running
 
 ```bash
-cd rust
 cargo run --release
 ```
 
@@ -72,7 +72,6 @@ independently and the UI polls the latest snapshot once per frame.
 ## Tests and benchmarking
 
 ```bash
-cd rust
 cargo test                 # rules, partition equivalence, engine actor, pattern/model, geometry
 cargo run --release --bin bench -- [gridSize] [generations]
 ```

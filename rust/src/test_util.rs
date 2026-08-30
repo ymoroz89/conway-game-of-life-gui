@@ -22,8 +22,7 @@ pub(crate) fn render(generation: &Generation) -> Vec<String> {
 
 /// Builds a reproducible pseudo-random board with the given live-cell
 /// probability, using a small deterministic xorshift PRNG so the arrangement
-/// is identical across runs (not identical to the Java `java.util.Random`
-/// arrangement, merely reproducible).
+/// is identical across runs.
 pub(crate) fn random(width: usize, height: usize, seed: u64, density: f64) -> Generation {
     let mut rng = Rng::new(seed);
     let mut generation = Generation::empty(width, height);

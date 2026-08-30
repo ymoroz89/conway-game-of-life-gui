@@ -1,7 +1,6 @@
-//! Conway's Game of Life — a Rust rework of the Java/Swing implementation that
-//! previously lived in this repository.
+//! Conway's Game of Life — a multithreaded simulation with an egui GUI.
 //!
-//! The design mirrors the original:
+//! The design:
 //!
 //! * a **single-writer actor** (`engine::SimulationEngine`) owns the board and
 //!   processes every mutation as a queued command, so no two threads ever touch
@@ -10,8 +9,8 @@
 //!   statistics that belong to it) behind a lock, which is what lets the UI
 //!   render at its own pace while the simulation runs;
 //! * generations are computed across parallel row bands by
-//!   [`engine::LifeRules`] using rayon, with the same ~50-rows-per-band
-//!   work rule the Java `PartitionPlanner` was calibrated on.
+//!   [`engine::LifeRules`] using rayon, with the ~50-rows-per-band
+//!   work rule the partition planner was calibrated on.
 
 pub mod config;
 pub mod engine;

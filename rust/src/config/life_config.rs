@@ -20,7 +20,7 @@ const DEFAULT_TARGET_FPS: u32 = 60;
 
 impl LifeConfig {
     /// Reads configuration from environment variables, falling back to the
-    /// defaults used by the Java implementation.
+    /// documented defaults.
     pub fn from_env() -> LifeConfig {
         let grid_size = usize_env("CONWAY_GRID_SIZE", DEFAULT_GRID_SIZE, 3, 10_000);
         let board_size_px = usize_env("CONWAY_BOARD_SIZE_PX", DEFAULT_BOARD_SIZE_PX, 50, 20_000);
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_the_java_application() {
+    fn defaults_are_stable() {
         let config = defaults();
 
         assert_eq!(config.grid_size(), 201);

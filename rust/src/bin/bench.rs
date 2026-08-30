@@ -1,8 +1,7 @@
 //! Headless throughput comparison across partition counts.
 //!
 //! The application's premise is that splitting a generation across threads is
-//! worthwhile. That claim needs evidence, and this benchmark is it — a direct
-//! port of the Java `GenerationBenchmark`.
+//! worthwhile. That claim needs evidence, and this benchmark is it.
 //!
 //! Run from the crate root:
 //!

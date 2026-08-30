@@ -1,8 +1,7 @@
 use egui::{Color32, Context, FontId, Stroke, Style, Visuals, Vec2};
 
-/// Single source of truth for the application's colours and typography -
-/// a direct port of the Java `Theme`, so the egui rework looks identical to
-/// the Swing original.
+/// Single source of truth for the application's colours and typography,
+/// shared by every widget and by the board renderer.
 pub struct Theme;
 
 impl Theme {

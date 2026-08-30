@@ -154,7 +154,7 @@ impl LifeRules {
 /// active ones), because flags outside the active region still belong to the
 /// band and must be preserved.
 // The band parameters are the price of the fused, bounds-free inner loop; every
-// argument has a distinct role, mirroring the Java engine's band computation.
+// argument has a distinct role.
 #[allow(clippy::too_many_arguments)]
 fn compute_band(
     src: &[bool],
@@ -260,7 +260,7 @@ fn compute_band(
     // still in cache for the second half. The OR sweeps the full width even
     // though `dst` can only be true inside the active region; the redundancy
     // is deliberate — it buys sequential access over a contiguous row, which
-    // the Java profiling found worth more than the work it skips. The
+    // profiling found worth more than the work it skips. The
     // population count is folded into this same pass.
     let mut population = 0usize;
     for row in from_row..to_row {

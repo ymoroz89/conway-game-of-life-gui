@@ -127,7 +127,7 @@ struct Shared {
 ///
 /// The simulation thread blocks on the command receiver while paused and
 /// *drains* pending commands without blocking while running, then advances one
-/// generation — the same loop the Java version used.
+/// generation.
 pub struct SimulationEngine {
     shared: Arc<Shared>,
     tx: mpsc::Sender<Command>,
@@ -190,7 +190,7 @@ impl SimulationEngine {
     }
 
     /// Flips a cell. Out-of-bounds coordinates are ignored rather than
-    /// rejected, mirroring the Java engine.
+    /// rejected.
     pub fn toggle_cell(&self, row: i32, col: i32) {
         self.submit(Command::ToggleCell { row, col });
     }

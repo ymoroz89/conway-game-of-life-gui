@@ -1,5 +1,5 @@
 //! Application entry point: builds the engine, seeds the board and shows the
-//! egui window. Mirrors the Java `Main` + `LifeGuiLauncher`.
+//! egui window.
 
 use conway_life::config::LifeConfig;
 use conway_life::engine::{SimulationEngine, SimulationSeeder};

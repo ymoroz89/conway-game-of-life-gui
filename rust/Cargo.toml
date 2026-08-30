@@ -3,7 +3,7 @@ name = "conway-life"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Conway's Game of Life — Rust rework of the Java/Swing implementation in this repository."
+description = "Conway's Game of Life — multithreaded simulation with an egui GUI."
 license = "MIT"
 
 [lib]

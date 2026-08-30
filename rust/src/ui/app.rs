@@ -214,8 +214,7 @@ impl LifeApp {
         );
 
         // Separators between cells, only when a cell is large enough that a
-        // line costs less than the cell's own colour (same threshold as the
-        // Java view).
+        // line costs less than the cell's own colour.
         let cell_px = rect.width() / self.grid_size as f32;
         if cell_px >= MIN_CELL_SIZE_FOR_GRID {
             let separator = Stroke::new(1.0, Theme::BOARD_GRID);
@@ -340,7 +339,7 @@ impl eframe::App for LifeApp {
     }
 }
 
-/// A button sized like the Java flats: full column width, fixed height.
+/// A sidebar button: full column width, fixed height.
 fn control_button(
     ui: &mut egui::Ui,
     enabled: bool,
@@ -366,7 +365,7 @@ fn centered_square(rect: Rect) -> Rect {
     )
 }
 
-/// Formats a count with thousands separators, as the Java status bar did.
+/// Formats a count with thousands separators for the status bar.
 fn with_thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);

@@ -1,5 +1,2 @@
-*.iml
 /.idea/
-/target/
-/logs/
 /rust/target/

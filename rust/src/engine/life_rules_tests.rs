@@ -95,7 +95,7 @@ fn blinker_oscillates_between_orientations_and_leaves_trails() {
 
 #[test]
 fn a_blinker_on_a_large_board_oscillates() {
-    // The Java suite stamped a blinker into a 50x50 board and checked the
+    // A blinker stamped into a 50x50 board; check the
     // relevant cells of the first generation.
     let rules = LifeRules;
     let mut gen0 = Generation::empty(50, 50)

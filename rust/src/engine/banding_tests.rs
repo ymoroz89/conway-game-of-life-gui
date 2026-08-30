@@ -23,7 +23,7 @@ fn bands_are_capped_by_active_rows() {
 
 #[test]
 fn sparse_board_runs_inline() {
-    // The case that regressed in Java: the partition count is sized for an
+    // The regression case: the partition count is sized for an
     // 801-row board, but a blinker occupies five rows. Sixteen bands there ran
     // 5.4x slower than inline.
     assert_eq!(LifeRules::bands_for(16, 801, spanning(5)), 1);
@@ -38,8 +38,8 @@ fn dense_board_uses_every_requested_band() {
 #[test]
 fn degenerate_inputs_yield_one_band() {
     assert_eq!(LifeRules::bands_for(16, 801, ActiveRegion::EMPTY), 1);
-    // Zero partitions clamp to a single band. (Rust has no negative usize, so
-    // the Java test's -5 case is covered by the clamp in `next`.)
+    // Zero partitions clamp to a single band; negative counts are unreachable
+    // for a `usize`, and `next` applies the same clamp.)
     assert_eq!(LifeRules::bands_for(0, 801, spanning(800)), 1);
 }
 

@@ -43,7 +43,7 @@ pub fn cell_color(alive: bool, ever_alive: bool) -> Color32 {
 ///
 /// Three paths, cheapest first. When the previous generation is the same size,
 /// only the cells whose colour differs are rewritten — the buffer must already
-/// hold the previous full image (mirroring the Java `BoardView`), so this is
+/// hold the previous full image, so this is
 /// only correct when the caller keeps it between calls. Otherwise the whole
 /// image is redrawn. Downsampled boards are always redrawn: the aggregation
 /// makes a diff pointless.

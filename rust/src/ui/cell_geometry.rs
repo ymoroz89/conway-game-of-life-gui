@@ -4,10 +4,10 @@
 /// without a window, and so the row and column cases share one implementation
 /// instead of two near-identical copies.
 ///
-/// Out-of-range input returns `None`. The previous Java implementation returned
-/// the row or column *count* for points past the last cell, which is not a
-/// valid index and produced an out-of-bounds access in any caller that did not
-/// separately re-check the bounds.
+/// Out-of-range input returns `None`. Returning the row or column *count* for
+/// points past the last cell would not be a valid index, and produced an
+/// out-of-bounds access in any caller that did not separately re-check the
+/// bounds.
 #[derive(Debug, Clone, Copy)]
 pub struct CellGeometry {
     rows: usize,

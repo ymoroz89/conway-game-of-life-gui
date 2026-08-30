@@ -1,14 +1,11 @@
 # Conway's Game of Life
 
-A Game of Life desktop application with a multithreaded rules engine, reworked
-from Java/Swing into **Rust** (backend + GUI). The engine mirrors the proven
-design of the original Java implementation — single-writer actor, immutable
-snapshots, band-parallel rule evaluation — and the GUI is a faithful dark-
-themed port built on [egui/eframe](https://github.com/emilk/egui).
+A Game of Life desktop application with a multithreaded rules engine, written
+in **Rust** (backend + GUI) — a single-writer actor engine, immutable
+snapshots, band-parallel rule evaluation, and a dark-themed GUI built on
+[egui/eframe](https://github.com/emilk/egui).
 
-The original Java/Swing implementation remains in `src/` as a reference; the
-Rust project lives in [rust/](rust/), with the historical Java README kept at
-docs/java-game-of-life.md).
+The whole application lives in [rust/](rust/).
 
 ## Building and running
 
@@ -36,8 +33,7 @@ lifecycle state.
 
 ## Configuration
 
-Settings are read from environment variables with a `CONWAY_` prefix (the Java
-version used system properties of the same names):
+Settings are read from environment variables with a `CONWAY_` prefix:
 
 | Variable | Default | Range | Meaning |
 | --- | --- | --- | --- |
@@ -62,8 +58,8 @@ The crate is split into three modules:
   every mutation is a queued command processed by one simulation thread, and
   the board is published as an immutable `EngineSnapshot` (a `Generation`
   behind an `Arc` plus its statistics) under a lock. `LifeRules` computes each
-  generation across parallel row bands with rayon, following the same
-  ~50-rows-per-band rule that was calibrated for the Java engine.
+  generation across parallel row bands with rayon, using the same
+  ~50-rows-per-band rule the engine has been calibrated with.
 * `src/model` — `Generation` (flat alive/ever-alive buffers, active region,
   population), `Pattern`/`.cells` parsing and the bundled Gosper glider gun.
 * `src/ui` — the egui application: sidebar controls, status bar, and a board
@@ -81,8 +77,7 @@ cargo test                 # rules, partition equivalence, engine actor, pattern
 cargo run --release --bin bench -- [gridSize] [generations]
 ```
 
-The benchmark is the port of the Java `GenerationBenchmark`: it times
-generations per second across 1, 2, 4, ... partitions on a seeded board, best
-of five after a warm-up run. Use `cargo run --release` and enlarge the window
-(or set `CONWAY_GRID_SIZE`) for the interactive experience; the default 201
-board is intentionally light so edits stay fluid.
+The benchmark times generations per second across 1, 2, 4, ... partitions on a
+seeded board, best of five after a warm-up run. Use `cargo run --release` and
+enlarge the window (or set `CONWAY_GRID_SIZE`) for the interactive experience;
+the default 201 board is intentionally light so edits stay fluid.

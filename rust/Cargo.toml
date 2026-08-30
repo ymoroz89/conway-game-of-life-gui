@@ -1,0 +1,28 @@
+[package]
+name = "conway-life"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Conway's Game of Life — Rust rework of the Java/Swing implementation in this repository."
+license = "MIT"
+
+[lib]
+name = "conway_life"
+path = "src/lib.rs"
+
+[[bin]]
+name = "conway-life"
+path = "src/main.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+eframe = "0.36"
+egui = "0.36"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

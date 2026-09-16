@@ -12,7 +12,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <maven.compiler.release>25</maven.compiler.release>
+        <maven.compiler.release>27</maven.compiler.release>
 
         <slf4j.version>2.0.20</slf4j.version>
         <logback.version>1.6.3</logback.version>
@@ -59,8 +59,23 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
+                    <!--
+                      Two preview APIs are in use: LifeRules computes each generation
+                      inside a StructuredTaskScope (JEP 533, seventh preview) and
+                      PatternLoader caches the bundled pattern in a LazyConstant
+                      (JEP 531, third preview). Consequences, all deliberate: the build
+                      requires exactly JDK ${maven.compiler.release} (preview class files
+                      refuse to load on any other version, older or newer), and the
+                      application must be launched with the enable-preview flag.
+                      See docs/java27-migration.md.
+                    -->
+                    <enablePreview>true</enablePreview>
                     <compilerArgs>
                         <arg>-Xlint:all</arg>
+                        <!-- Every StructuredTaskScope and LazyConstant call site would
+                             otherwise warn; the preview dependency is recorded above and
+                             in the docs instead. -->
+                        <arg>-Xlint:-preview</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
@@ -69,6 +84,8 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
+                    <!-- Preview class files do not load without it; see the compiler plugin. -->
+                    <argLine>--enable-preview</argLine>
                     <!-- Keeps UI tests runnable on a build agent with no display. -->
                     <systemPropertyVariables>
                         <java.awt.headless>true</java.awt.headless>
@@ -89,7 +106,9 @@
             </plugin>
             <!--
               Produces a single self-contained jar so `java -jar target/GuiLife.jar`
-              works without a sibling libs/ directory.
+              works without a sibling libs/ directory. One caveat since JDK 27: the
+              enable-preview flag cannot be baked into the manifest, so the launch
+              command has to carry it. See the compiler plugin above and the README.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

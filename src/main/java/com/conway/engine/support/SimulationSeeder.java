@@ -28,7 +28,7 @@ public final class SimulationSeeder {
      * for any configured grid.
      */
     public static void seedBoard(SimulationEngine engine, int gridSize) {
-        Pattern gun = PatternLoader.fromResource(PatternLoader.GOSPER_GLIDER_GUN);
+        Pattern gun = PatternLoader.bundledGliderGun();
         engine.place(gun, 1, 1);
         engine.place(gun.rotate180(),
                 gridSize - gun.height() - 1,

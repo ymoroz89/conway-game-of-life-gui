@@ -118,10 +118,12 @@ JDK 21 → 25 actually shipped, and retire every disposition that is now stale.
 
 ## Phase 4 — Structured Concurrency: decision and recorded adoption shape
 
-> **Superseded 2026-08-24.** The decision below ("not adopted, still preview")
-> was reversed and `StructuredTaskScope` was adopted on JDK 26. The adoption
-> shape recorded here is exactly what shipped, so the phase is kept as written
-> rather than rewritten. See [`structured-concurrency.md`](structured-concurrency.md).
+> **Superseded.** The decision below ("not adopted, still preview") was
+> reversed: `StructuredTaskScope` was adopted on the `java26` branch on
+> 2026-08-24, and on this line it landed with the JDK 27 bump on 2026-09-15
+> against JEP 533, the seventh preview. The adoption shape recorded here is
+> exactly what shipped either time, so the phase is kept as written rather than
+> rewritten. See [`structured-concurrency.md`](structured-concurrency.md).
 
 **Goal.** Decide on paper — not in code — whether the fifth preview of
 Structured Concurrency (JEP 505) changes anything for this codebase, and record

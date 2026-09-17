@@ -270,8 +270,23 @@ convert.
   the structured-concurrency reversal now name the release it landed in on this
   line.
 
-`PROFILING-LOG.md` is deliberately untouched: it is a record of a Java 21 vs
-Java 25 comparison that was run, and re-running it on 27 is a separate exercise.
+[`PROFILING-LOG.md`](../PROFILING-LOG.md) gained two JDK 27 rounds, run after this
+migration landed:
+
+- **Round 4** (headless) — the scope costs **1,137 B per generation**, the shipped engine
+  uses **5.2% less CPU per generation**, and throughput is at parity once the compile
+  target is held constant. It also found G1's young-gen sizing to be bimodal per JVM
+  start in that environment, which invalidates single-recording heap comparisons.
+- **Round 5** (GUI, repeating round 3's matched-generation design) — the 21 → 25 G1
+  sizing trend **continues into 27**: committed heap 620 → 300 → 262 MiB and collections
+  440 → 855 → 1,052, with throughput and bytes per generation flat. The scope's
+  per-generation cost replicates here at **+1,154 B**, within 17 bytes of the headless
+  figure.
+
+Both carry the vendor caveat from the toolchain section: Zulu 27 against Homebrew
+OpenJDK 21/25, so throughput differences under ~6% between rounds mean nothing, while the
+heap and GC rows are policy and do carry. Round 3's own table was re-derived from its
+snapshots in the process, correcting Java 25's pause max from 9.96 ms to 3.66 ms.
 
 ## Verification
 

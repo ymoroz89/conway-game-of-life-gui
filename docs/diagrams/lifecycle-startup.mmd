@@ -1,0 +1,5 @@
+flowchart TB
+    A["1 — main()<br/>config + default handler"] --> B["2 — new SimulationEngine<br/>thread starts, PAUSED"]
+    B --> C["3 — setPartitions(4)"]
+    C --> D["4 — seedBoard: 2 guns<br/>sync(5 s) Barrier"]
+    D --> E["5 — invokeLater: window up<br/>render loop starts"]

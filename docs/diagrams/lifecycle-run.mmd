@@ -1,0 +1,7 @@
+flowchart TB
+    F(["6 — idle: take() blocks<br/>0 CPU"]) -->|Start| G["7 — advance() per generation<br/>publish snapshot"]
+    G -->|"Pause / Stop / Clear"| F
+    G -->|"a band throws"| X["FAILED<br/>paused, dialog on the EDT"]
+    X --> F
+    F -->|"windowClosed / Quit / resize"| S["8 — shutdown, see below"]
+    G -->|"windowClosed / Quit"| S

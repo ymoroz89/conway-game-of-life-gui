@@ -1,0 +1,110 @@
+{
+  "recording": "gui-C3-25-rep2.jfr",
+  "sha256": "cd1ffe822f6926a4e009b7e5b587c5e3bed7fd523986f2d79a55d909fac94902",
+  "size_bytes": 8635346,
+  "units": 2000222,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.28392,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.41539,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.13147,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 314572800.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 13986064.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 188569600.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 164714512264.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": 82348.1,
+      "reason": null
+    },
+    "allocated_total_bytes": {
+      "value": 165914226968.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": 82947.9,
+      "reason": null
+    },
+    "gc_count": {
+      "value": 856,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 855,
+        "G1Old": 1
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.46777,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 0.4834,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 2.596,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 3.8579,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 99.02
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.47
+        },
+        {
+          "class": "java/lang/VirtualThread",
+          "share_pct": 0.12
+        },
+        {
+          "class": "com/conway/model/ActiveRegion",
+          "share_pct": 0.06
+        },
+        {
+          "class": "java/lang/VirtualThread$VThreadContinuation",
+          "share_pct": 0.05
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (25.0.4.1) for bsd-aarch64 JRE (25.0.4.1), built on 2026-08-07T11:31:46Z with clang Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+    "jvmArguments": "-XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=life,settings=profile,filename=profiling/gui-C3-25-rep2.jfr,dumponexit=true,maxsize=500m",
+    "javaArguments": "drive.GuiDrive 2000000 3"
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "recording": "gui-C4-25-rep1.jfr",
+  "sha256": "50b077ccf5c5348ba21609e2fca713904d4b3cee8828470998516213448465b0",
+  "size_bytes": 8903384,
+  "units": 2000290,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.28165,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.35413,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.07248,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 1073741824.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 13062968.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 643649808.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 170230022136.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": 85102.7,
+      "reason": null
+    },
+    "allocated_total_bytes": {
+      "value": 165915437912.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": 82945.7,
+      "reason": null
+    },
+    "gc_count": {
+      "value": 266,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 266
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.266521,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 0.8865,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 2.9517,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 3.8795,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 99.76
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.08
+        },
+        {
+          "class": "java/awt/geom/AffineTransform",
+          "share_pct": 0.02
+        },
+        {
+          "class": "sun/java2d/SunGraphics2D",
+          "share_pct": 0.01
+        },
+        {
+          "class": "java/lang/ref/WeakReference",
+          "share_pct": 0.01
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (25.0.4.1) for bsd-aarch64 JRE (25.0.4.1), built on 2026-08-07T11:31:46Z with clang Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+    "jvmArguments": "-XX:+UseG1GC -Xms1g -Xmx1g -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=40 -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=prof,settings=profile,filename=profiling/pinned-20260918/gui-C4-25-rep1.jfr,dumponexit=true,maxsize=500m",
+    "javaArguments": "drive.GuiDrive 2000000 3"
+  }
+}

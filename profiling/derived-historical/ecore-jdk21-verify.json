@@ -1,0 +1,109 @@
+{
+  "recording": "ecore-jdk21-verify.jfr",
+  "sha256": "ec8f844fd44e706ec574025add3fcee85eec5e1fbb32b47b5f27834181fb184a",
+  "size_bytes": 3844222,
+  "units": null,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.22847,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.33734,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.10886,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 650117120.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 7000008.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 389821536.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 85454749696.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": null,
+      "reason": "--units not supplied"
+    },
+    "allocated_total_bytes": {
+      "value": 192883728.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": null,
+      "reason": "--units not supplied"
+    },
+    "gc_count": {
+      "value": 225,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 225
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.336958,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 1.006,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 8.7636,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 14.8739,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 99.5
+        },
+        {
+          "class": "com/conway/model/ActiveRegion",
+          "share_pct": 0.22
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.12
+        },
+        {
+          "class": "java/lang/VirtualThread",
+          "share_pct": 0.03
+        },
+        {
+          "class": "java/lang/String",
+          "share_pct": 0.03
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (21.0.12.1) for bsd-aarch64 JRE (21.0.12.1), built on 2026-08-07T11:31:48Z by \"brew\" with clang Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+    "jvmArguments": "-XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=life,settings=profile,filename=profiling/ecore-jdk21-verify.jfr,dumponexit=true,maxsize=500m --add-modules=ALL-DEFAULT",
+    "javaArguments": "jdk.compiler/com.sun.tools.javac.launcher.Main profiling/SustainedRun.java 201 1000000 4"
+  }
+}

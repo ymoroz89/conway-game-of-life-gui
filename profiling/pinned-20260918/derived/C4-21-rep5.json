@@ -1,0 +1,109 @@
+{
+  "recording": "gui-C4-21-rep5.jfr",
+  "sha256": "3ca13c5c1b7b12e86df3bf7e4e81e3b5b374119e9008c278eaaba90e30ff07af",
+  "size_bytes": 8695733,
+  "units": 2000215,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.27868,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.33747,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.05879,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 1073741824.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 12411064.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 643649520.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 170617995264.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": 85299.8,
+      "reason": null
+    },
+    "allocated_total_bytes": {
+      "value": 165774328440.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": 82878.3,
+      "reason": null
+    },
+    "gc_count": {
+      "value": 267,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 267
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.279333,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 0.9265,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 3.2059,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 3.9475,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 99.74
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.1
+        },
+        {
+          "class": "sun/java2d/SunGraphics2D",
+          "share_pct": 0.02
+        },
+        {
+          "class": "[B",
+          "share_pct": 0.02
+        },
+        {
+          "class": "java/awt/geom/AffineTransform",
+          "share_pct": 0.01
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (21.0.12.1) for bsd-aarch64 JRE (21.0.12.1), built on 2026-08-07T11:31:48Z by \"brew\" with clang Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+    "jvmArguments": "-XX:+UseG1GC -Xms1g -Xmx1g -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=40 -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=prof,settings=profile,filename=profiling/pinned-20260918/gui-C4-21-rep5.jfr,dumponexit=true,maxsize=500m",
+    "javaArguments": "drive.GuiDrive 2000000 3"
+  }
+}

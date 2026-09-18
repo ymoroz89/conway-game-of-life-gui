@@ -1,0 +1,109 @@
+{
+  "recording": "headless-C3-25-rep1.jfr",
+  "sha256": "6d9bcba83f940367f4536033d610c3f10c76ade5082211aa9cce2d0d2a342348",
+  "size_bytes": 3079801,
+  "units": 1000005,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.28164,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.37508,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.09344,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 541065216.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 6168256.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 318593024.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 83093356544.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": 83092.9,
+      "reason": null
+    },
+    "allocated_total_bytes": {
+      "value": 82850525016.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": 82850.1,
+      "reason": null
+    },
+    "gc_count": {
+      "value": 269,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 269
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.151394,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 0.4953,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 1.6755,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 2.2878,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 98.82
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.59
+        },
+        {
+          "class": "com/conway/model/ActiveRegion",
+          "share_pct": 0.12
+        },
+        {
+          "class": "java/util/concurrent/ThreadPerTaskExecutor$ThreadBoundFuture",
+          "share_pct": 0.1
+        },
+        {
+          "class": "java/lang/VirtualThread",
+          "share_pct": 0.09
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (25.0.4.1) for bsd-aarch64 JRE (25.0.4.1), built on 2026-08-07T11:31:46Z with clang Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+    "jvmArguments": "-XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=life,settings=profile,filename=profiling/headless-C3-25-rep1.jfr,dumponexit=true,maxsize=500m",
+    "javaArguments": "drive.HeadlessDrive 201 4 1000000"
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "recording": "round4-shipped27-rep2.jfr",
+  "sha256": "2d5564d0639aed44482fa99d39ab78e4c7eef5709a580b3f710b87599cb05de7",
+  "size_bytes": 4671656,
+  "units": 1000248,
+  "metrics": {
+    "cpu_busy_fraction": {
+      "value": 0.25958,
+      "reason": null
+    },
+    "cpu_machine_total_fraction": {
+      "value": 0.38755,
+      "reason": null
+    },
+    "cpu_external_fraction": {
+      "value": 0.12797,
+      "reason": null
+    },
+    "committed_heap_p50_bytes": {
+      "value": 113246208.0,
+      "reason": null
+    },
+    "live_set_after_gc_p50_bytes": {
+      "value": 5176656.0,
+      "reason": null
+    },
+    "young_capacity_p50_bytes": {
+      "value": 67023936.0,
+      "reason": null
+    },
+    "eden_consumed_bytes": {
+      "value": 78798389248.0,
+      "reason": null
+    },
+    "bytes_per_unit_eden": {
+      "value": 78778.9,
+      "reason": null
+    },
+    "allocated_total_bytes": {
+      "value": 83719300576.0,
+      "reason": null
+    },
+    "bytes_per_unit_threads": {
+      "value": 83698.5,
+      "reason": null
+    },
+    "gc_count": {
+      "value": 1345,
+      "reason": null
+    },
+    "gc_count_by_name": {
+      "value": {
+        "G1New": 1345
+      },
+      "reason": null
+    },
+    "pause_total_s": {
+      "value": 0.397397,
+      "reason": null
+    },
+    "pause_p50_ms": {
+      "value": 0.2858,
+      "reason": null
+    },
+    "pause_p99_ms": {
+      "value": 0.4348,
+      "reason": null
+    },
+    "pause_max_ms": {
+      "value": 3.7233,
+      "reason": null
+    },
+    "virtual_thread_pinned_count": {
+      "value": 0,
+      "reason": null
+    },
+    "top_allocation_classes": {
+      "value": [
+        {
+          "class": "[Z",
+          "share_pct": 98.02
+        },
+        {
+          "class": "com/conway/engine/LifeRules$BandResult",
+          "share_pct": 0.97
+        },
+        {
+          "class": "[B",
+          "share_pct": 0.33
+        },
+        {
+          "class": "com/conway/model/ActiveRegion",
+          "share_pct": 0.15
+        },
+        {
+          "class": "[Ljava/util/concurrent/ConcurrentHashMap$Node;",
+          "share_pct": 0.1
+        }
+      ],
+      "reason": null
+    }
+  },
+  "identity": {
+    "jvmName": "OpenJDK 64-Bit Server VM",
+    "jvmVersion": "OpenJDK 64-Bit Server VM (27+35) for bsd-aarch64 JRE (27+35) (Zulu27.28+101-CA), built on 2026-08-21T15:20:09Z with clang Apple LLVM 14.0.3 (clang-1403.0.22.14.1)",
+    "jvmArguments": "--enable-preview -XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=life,settings=profile,filename=/Users/ymoroz/Documents/repos/conway-game-of-life-gui/profiling/round4-shipped27-rep2.jfr,dumponexit=true,maxsize=500m -Dconway.log.dir=/private/tmp/claude-501/-Users-ymoroz-Documents-repos-conway-game-of-life-gui/c4d6fded-8930-43d9-9e91-f74aaca88a25/scratchpad/logs",
+    "javaArguments": "drive.HeadlessDrive 201 4 1000000"
+  }
+}

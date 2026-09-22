@@ -1,6 +1,29 @@
 # Conway's Game of Life
 
+![Java](https://img.shields.io/badge/Java-21%2B-orange)
+![Build](https://img.shields.io/badge/build-Maven-blue)
+
 A Swing implementation of Conway's Game of Life with a multithreaded rules engine.
+The simulation runs on its own thread and publishes immutable snapshots, so the board
+renders at a steady frame rate no matter how fast generations are produced.
+
+Requires JDK 21 or newer (the engine uses virtual threads and `Math.clamp`).
+
+![The application running a 201×201 board. Two Gosper glider guns in opposite corners fire
+diagonal streams of gliders; live cells are mint, the trails they leave behind are plum.
+The status bar reads 27,065 generations at 17,677 generations per second across 4
+partitions.](docs/images/screenshot.png)
+
+## Contents
+
+- [Running](#running)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Design](#design) — how the threading works, and why
+- [Testing](#testing)
+- [Benchmark](#benchmark)
+- [JVM flags](#jvm-flags)
+- [Further reading](#further-reading)
 
 ## Running
 
@@ -28,27 +51,6 @@ toggle it, including while the simulation is running.
 Live cells are mint, cells that have died fade to plum, and cells where nothing has
 ever lived stay near-black.
 
-## JVM flags
-
-The application is a Swing GUI with a small, steady allocation rate (two `boolean[]`
-per generation, ~1.5 GB/s at full throughput). The default G1 collector handles this
-with negligible pause (measured ~1.6 ms max per collection, a few ms total over a
-20 s run). Recommended flags for a smooth interactive experience:
-
-```bash
-java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
-```
-
-- `-Xms256m -Xmx1g` — bound the heap so the JVM never grows unboundedly. The board
-  is at most 10,000×10,000 cells, so a gigabyte is generous.
-- `-XX:MaxGCPauseMillis=20` — keep G1 pauses under the frame budget.
-- `-XX:+UseZGC` — optional alternative for very large boards; ZGC's sub-millisecond
-  pauses come at higher CPU cost, which is fine for an interactive app but pointless
-  at the default board size.
-
-The engine uses virtual threads for both the simulation actor and the band workers.
-No pinning was observed in a JFR recording (see `docs/java21-migration.md`).
-
 ## Configuration
 
 Every setting is a system property; the defaults are shown.
@@ -68,28 +70,272 @@ Every setting is a system property; the defaults are shown.
 java -Dconway.gridSize=401 -Dconway.log.level=DEBUG -jar target/GuiLife.jar
 ```
 
+## Architecture
+
+```mermaid
+flowchart LR
+    user(["User input"]) --> UI
+
+    subgraph UI["Swing event dispatch thread"]
+        direction TB
+        LifeFrame["LifeFrame<br/>Render timer, sends commands"]
+        BoardView["BoardView<br/>Pixel blit onto BufferedImage"]
+    end
+
+    UI -- commands --> ENGINE
+
+    subgraph ENGINE["Simulation thread — single writer"]
+        direction TB
+        SimulationEngine["SimulationEngine<br/>Owns the board, processes commands"]
+        LifeRules["LifeRules<br/>Row bands on virtual threads"]
+    end
+
+    ENGINE -- publishes --> Snapshot(["EngineSnapshot<br/>volatile · polled every frame by LifeFrame"])
+
+    classDef orchestrator fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+    classDef worker fill:#FBEAF0,stroke:#993556,color:#4B1528
+    classDef state fill:#EEEDFE,stroke:#534AB7,color:#26215C
+    class LifeFrame,SimulationEngine orchestrator
+    class BoardView,LifeRules worker
+    class Snapshot state
+```
+
+Commands flow one way, from the UI into the engine's queue. State flows back only
+through `EngineSnapshot`: an immutable bundle published through a single `volatile`
+field. The render loop polls it on a fixed timer; nothing pushes to it, and nothing
+outside the simulation thread ever touches the board directly.
+
 ## Design
 
 The application is a single-writer actor with an immutable-snapshot read path.
 
-- **`SimulationEngine`** owns the board. It is the only thread that ever mutates
-  simulation state. Everything else — the UI, tests — submits commands to a queue.
-  Pausing blocks on `BlockingQueue.take()`, so a queued step request can never be
-  lost and a spurious wakeup can never advance the board. Both the simulation actor
-  and the band workers run on virtual threads.
-- **`Generation`** is an immutable snapshot published through a single `volatile`
-  field together with its statistics (`EngineSnapshot`). Readers see generation N or
-  N+1 in full, always with the throughput numbers that belong to it, and need no
-  lock. Cells are flat `boolean[]` indexed `row * width + col`.
-- **`LifeRules`** splits a generation into contiguous row bands. Bands write to
-  disjoint slices, so no synchronisation is needed between workers; `Future.get()`
-  supplies the happens-before edge. A failing band aborts the generation rather than
-  silently producing a wrong board.
-- **`BoardView`** writes colours into the `int[]` backing one `BufferedImage` and
-  performs a single scaled blit.
-- **`LifeFrame`** pulls the newest snapshot on a fixed timer. The simulation is not
-  throttled by the repaint rate, and the repaint rate is not swamped by the
-  simulation.
+### The classes, at a glance
+
+- **[`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java)** owns
+  the board. It is the only thread that ever mutates simulation state. Everything
+  else — the UI, tests — submits commands to a queue. Pausing blocks on
+  `BlockingQueue.take()`, so a queued step request can never be lost and a spurious
+  wakeup can never advance the board. Both the simulation actor and the band workers
+  run on virtual threads.
+- **[`Generation`](src/main/java/com/conway/model/Generation.java)** is an immutable
+  snapshot published through a single `volatile` field together with its statistics
+  ([`EngineSnapshot`](src/main/java/com/conway/engine/EngineSnapshot.java)). Readers
+  see generation N or N+1 in full, always with the throughput numbers that belong to
+  it, and need no lock. Cells are flat `boolean[]` indexed `row * width + col`.
+- **[`LifeRules`](src/main/java/com/conway/engine/LifeRules.java)** splits a generation
+  into contiguous row bands. Bands write to disjoint slices, so no synchronisation is
+  needed between workers; `Future.get()` supplies the happens-before edge. A failing
+  band aborts the generation rather than silently producing a wrong board.
+- **[`BoardView`](src/main/java/com/conway/ui/BoardView.java)** writes colours into the
+  `int[]` backing one `BufferedImage` and performs a single scaled blit.
+- **[`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java)** pulls the newest
+  snapshot on a fixed timer. The simulation is not throttled by the repaint rate, and
+  the repaint rate is not swamped by the simulation.
+
+The rest of this section explains *why* it is shaped that way. If you have not written
+a multithreaded GUI before, this is the interesting part.
+
+### The one constraint everything follows from
+
+Swing has a rule that admits no exceptions: **only the event dispatch thread (the EDT)
+may touch a Swing component.** That thread is also the one that delivers button clicks
+and repaints the window. So if you compute a generation directly inside a button's
+`ActionListener`, the EDT is busy doing that work and cannot repaint or respond to
+anything — the window goes grey and the OS reports it as not responding.
+
+Meanwhile, a Game of Life board is real CPU work, repeated forever: at the default
+201×201 board the engine produces thousands of generations per second, each one
+touching tens of thousands of cells.
+
+Those two facts force the shape of the whole application:
+
+1. The simulation must run on its **own thread**, not the EDT.
+2. The EDT must be able to **display** the board without waiting for that thread.
+3. The EDT must be able to **control** the simulation without waiting for it either.
+
+Every pattern below is an answer to one of those three points.
+
+### What breaks if you just share the board
+
+The obvious first attempt is one board that both threads use — the simulation thread
+writing cells, the EDT reading them to paint. It fails two ways, and the second is the
+dangerous one.
+
+**1. Torn reads.** Writing a single `boolean` into an array is atomic, so no one cell is
+ever half-written. But nothing makes the board *as a whole* atomic. The simulation thread
+needs thousands of writes to finish generation N+1, and the EDT can paint partway through
+— producing a frame that is part N, part N+1. Not a stale board: one that never existed.
+Gliders tear in half.
+
+**2. Visibility.** Without `volatile` or a lock, the Java Memory Model gives **no
+guarantee that one thread's write is ever seen by another**. The JIT may hoist the read
+out of the render loop, and each core has its own caches. A perfectly legal outcome is
+the EDT painting the starting board forever while the simulation runs behind it — and the
+code looks correct the whole time.
+
+Locking fixes both, at a price: the EDT blocks on a lock held by a thread mutating
+thousands of times a second, and every future access has to remember to take it.
+
+### The fix: never mutate what another thread can see
+
+Instead of guarding mutation, this codebase removes it. `LifeRules` builds each new board
+in *fresh* arrays and transfers ownership via `Generation.adopt(...)`, so a published
+`Generation` is never written to again. The entire handoff to other threads is one
+assignment:
+
+```java
+private volatile EngineSnapshot snapshot;
+
+private void publish(Generation generation, SimulationStats stats) {
+    snapshot = new EngineSnapshot(generation, stats);
+}
+```
+
+It works because of a JMM rule called **safe publication**: writing a reference to a
+`volatile` field guarantees that everything the writing thread did *before* that write —
+including fully constructing the object — is visible to any thread that later reads the
+field. A reader therefore gets a completely built `Generation`, or the previous one.
+Never a mixture.
+
+And because the object is immutable, there is no *second* problem: once you hold it,
+nothing can change it under you. There is nothing left to lock.
+
+Two consequences worth noticing in the code:
+
+- The board and its statistics are bundled into one `EngineSnapshot` rather than
+  published as two fields, so the status bar can never show generation N+1's number
+  next to generation N's population.
+- Because a new instance is published per change, `BoardView.setGeneration` can test
+  `generation != displayed` — plain reference identity — to decide whether anything
+  changed. No deep comparison needed.
+
+### Commands travel the other way, through a queue
+
+Point 3 from above: the EDT has to start, stop and edit the simulation without blocking.
+It cannot call into the simulation thread's state directly — that would just recreate
+the shared-mutable-state problem in the opposite direction.
+
+So every control is a message. `SimulationEngine`'s public methods do nothing except put
+an object on a queue:
+
+```java
+public void start() { submit(Command.Start.INSTANCE); }
+public void toggleCell(int row, int col) { submit(new Command.ToggleCell(row, col)); }
+```
+
+`Command` is a `sealed interface` implemented by records, so the loop that consumes it
+can `switch` over every case with the compiler checking that none was forgotten. The
+EDT returns from `start()` in microseconds, whatever the engine is doing.
+
+The consuming loop has one detail worth studying:
+
+```java
+Command command = running ? commands.poll() : commands.take();
+```
+
+- **Running:** `poll()` returns `null` immediately if no command is waiting, so the loop
+  falls through and computes the next generation. Commands are still picked up between
+  generations.
+- **Paused:** `take()` *blocks* until something arrives. An idle engine therefore burns
+  no CPU at all, and — unlike a `wait()`/`notify()` pair — a step request that arrives at
+  an awkward moment cannot be lost, because it is sitting in the queue rather than being
+  a notification that may have already fired.
+
+This is the **actor** pattern: one thread owns the state, and everyone else sends it
+messages.
+
+### Inside one generation: parallelism without locks
+
+The board is split into contiguous **row bands**. Band *k* reads the previous generation
+(which nobody is writing) and writes only its own rows of the new arrays. Because no two
+bands ever touch the same memory, the workers need no coordination with each other at
+all — no lock, no atomic, nothing.
+
+Two details in [`LifeRules.next`](src/main/java/com/conway/engine/LifeRules.java) that a
+diagram would hide:
+
+- The calling thread does not just dispatch and wait. It submits bands 1..N−1 to the
+  executor and then computes **band 0 itself**, so the simulation thread does useful work
+  instead of parking for the whole generation.
+- Joining is what makes the result safe to read. `Future.get()` blocks until that band is
+  done *and* establishes a happens-before edge, which is the guarantee that the worker's
+  writes are visible to the joining thread. Band 0 needs no join because the same thread
+  wrote it.
+
+Splitting is a pure work-distribution choice: the resulting board must be identical
+whatever the band count, which is exactly what
+[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/PartitionEquivalenceTest.java)
+asserts. That test is the safety net for the whole parallel path.
+
+### Rendering runs on its own clock
+
+A tempting design is "compute a generation, repaint, repeat". This codebase deliberately
+does not do that. `LifeFrame` starts a Swing `Timer` at `conway.targetFps` (60 by
+default) and, on each tick, reads whatever has been published:
+
+```java
+EngineSnapshot snapshot = engine.snapshot();   // one volatile read
+```
+
+If the engine produced 300 generations since the last tick, 299 are simply never drawn —
+and that is correct, because the display cannot show them anyway. The benefit runs both
+ways: the simulation is never throttled by repaint backpressure, and the EDT never has a
+frame backlog to work through.
+
+### Trace: one click, end to end
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant EDT as Event dispatch thread
+    participant Queue as Command queue
+    participant Snap as volatile snapshot field
+    participant Sim as Simulation thread
+    participant Workers as Band workers (virtual threads)
+
+    User->>EDT: clicks Start
+    EDT->>Queue: enqueue Command.Start
+    Note over EDT: returns immediately - EDT is free
+    Sim->>Queue: take()
+    Queue-->>Sim: Command.Start
+
+    loop every generation
+        Sim->>Workers: dispatch row bands
+        Workers-->>Sim: Future.get() joins (happens-before)
+        Sim->>Snap: write EngineSnapshot
+    end
+
+    Note over Snap,Sim: Sim never talks to the EDT directly - only this field
+
+    loop every frame, about 16ms
+        EDT->>Snap: read (volatile)
+        Snap-->>EDT: latest EngineSnapshot
+        EDT->>EDT: repaint BoardView if it changed
+    end
+```
+
+The two loops are independent. Neither ever waits for the other; the only things crossing
+between them are a queue in one direction and a single field in the other.
+
+The one exception is lifecycle news — "the engine is now running", "a generation failed".
+Those are pushed through [`EngineListener`](src/main/java/com/conway/engine/EngineListener.java),
+and because those callbacks run **on the simulation thread**, `LifeFrame` wraps each one
+in `SwingUtilities.invokeLater` to hop back onto the EDT before touching a component.
+Per-generation updates are deliberately *not* sent this way — that would put the
+simulation rate back in charge of the frame rate.
+
+### Concepts glossary
+
+| Term | What it means here |
+| --- | --- |
+| Event dispatch thread (EDT) | The one thread Swing allows to touch components. Blocking it freezes the UI |
+| Torn read | Observing a mix of old and new values because the update was not atomic as a whole |
+| Visibility | Whether one thread's write is guaranteed to be seen by another. Not automatic in Java |
+| Safe publication | Writing a reference to a `volatile` field so readers see a fully constructed object |
+| Happens-before | The JMM ordering guarantee that makes one thread's writes visible to another. Supplied here by `volatile` writes and `Future.get()` |
+| Actor | One thread owns mutable state; everyone else sends it messages instead of calling it |
+| Single-writer principle | Only one thread ever mutates a piece of state, so reads need no lock |
+| Virtual thread | A JDK 21 thread that unmounts from its carrier while blocked, so idle ones cost almost nothing |
 
 The grid is bounded, not toroidal: neighbours off the edge count as dead.
 
@@ -117,24 +363,50 @@ mutable state between workers.
 java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
 ```
 
-Optional arguments: grid size, generations per measurement.
+Arguments, all optional: grid size, generations per measurement, and the executor —
+`platform` (the default) or `virtual`.
 
-Measured on a 201×201 board, 10 available cores, best of 5 runs of 300 generations:
+The default is **not** the path the application takes. `SimulationEngine` always uses a
+virtual-thread-per-task executor, while the harness defaults to a fixed platform pool, so
+measure the shipping configuration explicitly:
 
-| Partitions | Generations/s | Speedup |
-| --- | --- | --- |
-| 1 | 12,401 | 1.00× |
-| 2 | 15,520 | 1.25× |
-| 4 | 16,238 | 1.31× |
-| 8 | 16,241 | 1.31× |
-| 16 | 15,464 | 1.25× |
-| 20 | 15,442 | 1.25× |
+```bash
+java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
+```
 
-**Parallelism buys about 1.3× on 10 cores, and adding partitions past 8 makes things
-worse.** A single generation on this board takes roughly 80 µs, which is small enough
-that task dispatch and the join barrier dominate. The simulation is already about 200×
-faster than the 60 fps display, so on the default board the threading has no effect on
-what you see; decoupling rendering from the simulation is what matters.
+> **Read the numbers as indicative, not precise.** The harness warms up, resets to an
+> identical board before each measurement and takes the best of five — enough to show
+> the shape of the curve, but it is not
+> [JMH](https://openjdk.org/projects/code-tools/jmh/). It also measures partition counts
+> in ascending order inside a single JVM, so later rows inherit a warmer JIT; differences
+> between adjacent rows are not reliable. Reach for JMH before drawing any conclusion
+> finer than "does adding threads help at all".
+
+Measured on a 201×201 board with the `virtual` executor — Apple M2 Pro (6 performance +
+4 efficiency cores), JDK 25, 300 generations per measurement, best result across six
+invocations of the harness:
+
+| Partitions requested | Bands actually run | Generations/s | Speedup |
+| --- | --- | --- | --- |
+| 1 | 1 | 12,886 | 1.00× |
+| 2 | 2 | 17,121 | 1.33× |
+| 4 | 4 | 17,560 | 1.36× |
+
+Read 2 and 4 as tied. Taking the mean of those same six runs instead of the best
+(12,638 / 16,839 / 16,322) flips the order and puts 2 ahead. What the table establishes
+is what splitting the work at all is worth on this board — roughly a third faster — not a
+sharp optimum. The machine also carried about one core of unrelated background load, so
+the parallel rows are conservative.
+
+The table stops at 4 on purpose. A generation is split across at most
+`activeRows / 50` bands, so on a 201 board every request of 4 or more runs the *same*
+four bands — rows for 8, 16 and 20 would repeat row 4's work under different labels, and
+any difference between them would be measurement artifact rather than scaling.
+
+**Parallelism buys about 1.3× on this board.** A single generation takes roughly 80 µs,
+which is small enough that task dispatch and the join barrier dominate. The simulation is
+already about 200× faster than the 60 fps display, so on the default board the threading
+has no effect on what you see; decoupling rendering from the simulation is what matters.
 
 ### How the default partition count is chosen
 
@@ -148,6 +420,13 @@ single partition, same machine and harness:
 | 801 | 1.00× | 1.80× | 3.13× | 3.07× | **3.53×** | 3.52× | 16 |
 | 1601 | 1.00× | 1.86× | 3.39× | 3.95× | 4.92× | **5.10×** | 20 |
 
+Two health warnings on this table. It predates the per-generation band cap, so the
+right-hand columns no longer measure distinct configurations (see below). And it is a
+different session from the table above — which reports 1.36× where this one reports
+1.15× for the same 201 board at 4 partitions. That ~18% disagreement between runs of the
+same configuration is the harness's real precision, and a good reason to trust only the
+shape of the curve. These rows have not been re-measured since the band cap landed.
+
 At every size the fastest result lands at roughly **fifty rows per band**, and the
 largest board is still improving when it hits the cap. That invariant is the rule
 [`PartitionPlanner`](src/main/java/com/conway/engine/PartitionPlanner.java) implements:
@@ -157,8 +436,11 @@ work that does not exist.
 
 Two consequences worth knowing:
 
-- Defaulting to `availableProcessors()` would be **slower** than the chosen value on the
-  default board — 10 partitions sits past the peak, on the declining side of the curve.
+- Defaulting to `availableProcessors()` was measurably **slower** than the chosen value
+  when these numbers were recorded — 10 partitions sat past the peak. The per-generation
+  cap has since made the two equivalent on the default board, because both end up at four
+  bands; the planner still earns its place on larger boards, where the request is not
+  capped away.
 - The cap deliberately allows more bands than cores. These are asymmetric cores
   (6 performance + 4 efficiency); since a generation ends at a barrier, an efficiency
   core given an equal share delays everyone, and smaller bands let the faster cores
@@ -170,18 +452,49 @@ cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partiti
 The engine applies the same rule again per generation, against the *active region* rather
 than the whole board, and computes inline when there is too little live area to fill the
 bands. A sparse board is therefore never split: on a 201×201 grid holding a single blinker,
-sixteen bands ran six times slower than computing inline. A consequence for the table above:
-at 201 every partition count from 4 upwards now runs four bands, so differences between those
-rows are measurement noise rather than scaling.
+sixteen bands ran six times slower than computing inline.
 
-Treat these figures as indicative. This is a simple harness, not
-[JMH](https://openjdk.org/projects/code-tools/jmh/) — use JMH before drawing any
-conclusion more precise than "does adding threads help at all".
+That cap also means the high-partition columns above no longer measure what they did when
+the table was recorded. A full board now runs at most `rows / 50` bands — four at 201,
+eight at 401, sixteen at 801 — so on each row every column at or beyond that point repeats
+the same work, and the differences between them are measurement artifact rather than
+scaling. Only the 1601 row still varies across all six columns.
 
-## Security scanning
+## JVM flags
+
+The application is a Swing GUI with a small, steady allocation rate: two `boolean[]` per
+generation, which on the default board works out to 1.0–1.5 GB/s depending on the rate
+achieved. The default G1 collector handles this with negligible pause (measured ~1.6 ms
+max per collection, a few ms total over a 20 s run). Recommended flags for a smooth
+interactive experience:
 
 ```bash
-mvn -Psecurity verify
+java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
 ```
 
-Opt-in, because the first run downloads the full NVD data set. CI runs it weekly.
+- `-Xms256m -Xmx1g` — ample for the default board, where one generation is two 40 KB
+  arrays. It is **not** enough near the 10,000×10,000 maximum: a generation is 200 MB
+  there (two 100 MB `boolean[]`), and computing the next one allocates a further 200 MB
+  before the previous is released. Size the heap from the board — at least
+  `4 × width × height` bytes live, plus headroom for the renderer's copy — or stay near
+  the default grid.
+- `-XX:MaxGCPauseMillis=20` — keep G1 pauses under the frame budget.
+- `-XX:+UseZGC` — optional alternative for very large boards; ZGC's sub-millisecond
+  pauses come at higher CPU cost, which is fine for an interactive app but pointless
+  at the default board size.
+
+The engine uses virtual threads for both the simulation actor and the band workers.
+No pinning was observed in a JFR recording (see
+[`docs/java21-migration.md`](docs/java21-migration.md)).
+
+## Further reading
+
+The engineering behind the design decisions above is written up in `docs/`:
+
+| Document | What it covers |
+| --- | --- |
+| [Java 21 migration](docs/java21-migration.md) | What changed moving 17 → 21 and why: virtual threads, the single volatile snapshot, JMM and GC cleanup |
+| [Concurrency features review](docs/concurrency-features-review.md) | Every Java ≤21 concurrency tool weighed against this codebase, including what was rejected and the reason |
+| [Profiling findings](docs/profiling-findings.md) | Analysis of a VisualVM snapshot and thread dump, with the findings a later clean JFR profile overturned marked as such |
+| [Profiling fixes](docs/profiling-issues-fixing-progress.md) | What was done about each finding — incremental rendering, band capping, and the ones deliberately not fixed |
+| [Migration plan](docs/java21-migration-plan.md) | The original tracking document for the migration |

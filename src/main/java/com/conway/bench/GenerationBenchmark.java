@@ -27,10 +27,10 @@ import com.conway.model.PatternLoader;
  *
  * <ul>
  *   <li>{@code platform} (default) &mdash; a fixed pool of platform threads.</li>
- *   <li>{@code virtual} &mdash; virtual-thread-per-task. <strong>This is what
- *       {@link com.conway.engine.SimulationEngine} actually uses</strong>, adopted after
- *       this harness measured it at parity with the fixed pool; the win was deleting the
- *       pool-sizing apparatus, not throughput.</li>
+ *   <li>{@code virtual} &mdash; virtual-thread-per-task. This harness measured it at parity
+ *       with the fixed pool; the application has since moved to a {@code ForkJoinPool} band
+ *       pool (see {@link com.conway.engine.SimulationEngine}), which measured 12-19% faster
+ *       at 201/4 partitions with parity at 801. The mode remains for comparison.</li>
  *   <li>{@code forkjoin} &mdash; a dedicated {@link java.util.concurrent.ForkJoinPool}
  *       with parallelism equal to the core count. Bands are uneven, because
  *       {@code computeBand} clips rule evaluation to the active region, and the cores are

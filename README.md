@@ -42,13 +42,13 @@ toggle it, including while the simulation is running.
 
 | Control | Effect |
 | --- | --- |
-| Board size | Board edge in cells: 200, 400 or 800. Changing it restarts the simulation on a fresh board, and is only available while stopped |
-| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine, and re-derived whenever the board size changes |
+| Board size | Board labels 200, 400 or 800 (201, 401 or 801 cells; the extra cell is a grid detail). Changing it discards the run and seeds a fresh board, and is only available while stopped |
+| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine, and re-derived whenever the board size changes. Only adjustable while stopped |
 | Start / Stop | Run continuously, or pause |
 | Next generation | Advance exactly one generation |
 | Clear | Empty the board and reset the counter |
 
-Live cells are mint, cells that have died fade to plum, and cells where nothing has
+Live cells are mint, cells that have died turn plum, and cells where nothing has
 ever lived stay near-black.
 
 ## Configuration
@@ -60,7 +60,7 @@ Every setting is a system property; the defaults are shown.
 | `conway.gridSize` | `201` | Board width and height in cells; also the size selected on startup. A value that is not one of the presets is added to the board-size control rather than replaced |
 | `conway.boardSizePx` | `1000` | Target board size in pixels; cell size is derived |
 | `conway.targetFps` | `60` | Repaint rate, independent of the simulation rate |
-| `conway.maxPartitions` | `min(gridSize, 2 × cores)` | Upper bound for the partition control |
+| `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | Upper bound for the partition control |
 | `conway.partitions` | chosen per board and machine | Partition count to start with; overrides the recommendation |
 | `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the recommendation |
 | `conway.log.dir` | `logs` | Log directory |
@@ -122,7 +122,7 @@ The application is a single-writer actor with an immutable-snapshot read path.
   idle (daemon by default, so the JVM can still exit if a shutdown path is missed).
   `computeBand` never blocks — pure CPU at roughly 50,000 band dispatches per second,
   the one case virtual threads do not address — so the band workers are a
-  `ForkJoinPool` sized to the core count. Work stealing absorbs uneven bands on
+  `ForkJoinPool` sized to `min(maxPartitions, core count)`. Work stealing absorbs uneven bands on
   asymmetric cores instead of idling at the per-generation barrier, and per-worker
   deques beat one contended queue; measured 12–19% faster than virtual-thread workers
   on the default 201 board at 4 partitions, parity on 801 (see
@@ -229,13 +229,14 @@ So every control is a message. `SimulationEngine`'s public methods do nothing ex
 an object on a queue:
 
 ```java
-public void start() { submit(Command.Start.INSTANCE); }
+public void start() { submit(Command.Signal.START); }
 public void toggleCell(int row, int col) { submit(new Command.ToggleCell(row, col)); }
 ```
 
-`Command` is a `sealed interface` implemented by records, so the loop that consumes it
-can `switch` over every case with the compiler checking that none was forgotten. The
-EDT returns from `start()` in microseconds, whatever the engine is doing.
+`Command` is a `sealed interface` implemented by an enum of data-free signals and by
+records for the commands that carry data, so the loop that consumes it can `switch` over
+every case with the compiler checking that none was forgotten. The EDT returns from
+`start()` in microseconds, whatever the engine is doing.
 
 The consuming loop has one detail worth studying:
 
@@ -304,10 +305,10 @@ sequenceDiagram
     participant Workers as Band workers (ForkJoinPool)
 
     User->>EDT: clicks Start
-    EDT->>Queue: enqueue Command.Start
+    EDT->>Queue: enqueue Command.Signal.START
     Note over EDT: returns immediately - EDT is free
     Sim->>Queue: take()
-    Queue-->>Sim: Command.Start
+    Queue-->>Sim: Command.Signal.START
 
     loop every generation
         Sim->>Workers: dispatch row bands
@@ -442,7 +443,7 @@ The table stops at 4 on purpose. A generation is split across at most
 four bands — rows for 8, 16 and 20 would repeat row 4's work under different labels, and
 any difference between them would be measurement artifact rather than scaling.
 
-**Parallelism buys about 1.3× on this board.** A single generation takes roughly 80 µs,
+**Parallelism buys about 1.5× on this board.** A single generation takes roughly 80 µs,
 which is small enough that task dispatch and the join barrier dominate. The simulation is
 already about 200× faster than the 60 fps display, so on the default board the threading
 has no effect on what you see; decoupling rendering from the simulation is what matters.
@@ -461,15 +462,15 @@ single partition, same machine and harness:
 
 Two health warnings on this table. It predates the per-generation band cap, so the
 right-hand columns no longer measure distinct configurations (see below). And it is a
-different session from the table above — which reports 1.36× where this one reports
-1.15× for the same 201 board at 4 partitions. That ~18% disagreement between runs of the
+different session from the table above — which reports 1.48× where this one reports
+1.15× for the same 201 board at 4 partitions. That ~29% disagreement between runs of the
 same configuration is the harness's real precision, and a good reason to trust only the
 shape of the curve. These rows have not been re-measured since the band cap landed.
 
 At every size the fastest result lands at roughly **fifty rows per band**, and the
 largest board is still improving when it hits the cap. That invariant is the rule
 [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) implements:
-`clamp(1, rows / 50, maxPartitions)`. It reproduces the measured optimum at all four
+`clamp(rows / 50, 1, maxPartitions)`. It reproduces the measured optimum at all four
 sizes, and it keeps small boards single-threaded instead of paying dispatch cost for
 work that does not exist.
 
@@ -491,7 +492,7 @@ cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partiti
 The engine applies the same rule again per generation, against the *active region* rather
 than the whole board, and computes inline when there is too little live area to fill the
 bands. A sparse board is therefore never split: on a 201×201 grid holding a single blinker,
-sixteen bands ran six times slower than computing inline.
+sixteen bands ran 5.4 times slower than computing inline.
 
 That cap also means the high-partition columns above no longer measure what they did when
 the table was recorded. A full board now runs at most `rows / 50` bands — four at 201,
@@ -503,8 +504,9 @@ scaling. Only the 1601 row still varies across all six columns.
 
 The application is a Swing GUI with a small, steady allocation rate: two `boolean[]` per
 generation, which on the default board works out to 1.0–1.5 GB/s depending on the rate
-achieved. The default G1 collector handles this with negligible pause (measured ~1.6 ms
-max per collection, a few ms total over a 20 s run). Recommended flags for a smooth
+achieved. The default G1 collector already absorbs this with negligible pause (measured
+~1.6 ms max per collection, a few ms total over a 20 s run), so the flags below are
+optional at this board size; they bound the heap and tighten the pause goal for a smooth
 interactive experience:
 
 ```bash
@@ -512,18 +514,22 @@ java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
 ```
 
 - `-Xms256m -Xmx1g` — ample for the default board, where one generation is two 40 KB
-  arrays. It is **not** enough near the 10,000×10,000 maximum: a generation is 200 MB
-  there (two 100 MB `boolean[]`), and computing the next one allocates a further 200 MB
-  before the previous is released. Size the heap from the board — at least
+  arrays. `-Xms256m` sets only the initial heap size; it is `-Xmx1g` that has to cover
+  the live set. A gigabyte is **not** enough near the 10,000×10,000 maximum: a generation
+  is 200 MB there (two 100 MB `boolean[]`), and computing the next one allocates a
+  further 200 MB before the previous is released. Size `-Xmx` from the board — at least
   `4 × width × height` bytes live, plus headroom for the renderer's copy — or stay near
   the default grid.
-- `-XX:MaxGCPauseMillis=20` — keep G1 pauses under the frame budget.
+- `-XX:MaxGCPauseMillis=20` — lower G1's pause goal from its 200 ms default, so a
+  pathological collection is less likely to stall the render loop. The measured pauses
+  (~1.6 ms) already sit far inside the 16.7 ms frame budget at 60 fps, so this is
+  headroom rather than a fix.
 - `-XX:+UseZGC` — optional alternative for very large boards; ZGC's sub-millisecond
   pauses come at higher CPU cost, which is fine for an interactive app but pointless
   at the default board size.
 
-The simulation actor is a virtual thread; the band workers are a `ForkJoinPool` sized to
-the core count — split by shape, as above: the actor blocks, the bands never do. A JDK
+The simulation actor is a virtual thread; the band workers are a `ForkJoinPool` sized to `min(maxPartitions, core count)`
+— split by shape, as above: the actor blocks, the bands never do. A JDK
 21 JFR recording taken while both the actor *and* the band workers
 were virtual captured zero `jdk.VirtualThreadPinned` events with the threshold lowered to
 0 ms, so nothing in the engine's blocking paths pins a carrier. Background in

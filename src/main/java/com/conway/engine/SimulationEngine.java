@@ -53,8 +53,8 @@ import com.conway.model.Pattern;
  *
  * <h2>Threads</h2>
  * The simulation thread is a <em>virtual</em> thread: it spends its life blocked in
- * {@code take()}/{@code Future.get()} and parks between generations, so it unmounts from
- * any carrier while blocked and costs nothing while idle. Virtual threads are daemon by
+ * {@code take()}/{@code Future.get()}, so it unmounts from any carrier while blocked and
+ * costs nothing while idle. Virtual threads are daemon by
  * default, so the JVM can still exit if a shutdown path is missed.
  *
  * <p>The band workers are a <em>{@link ForkJoinPool}</em>, because the work is pure CPU
@@ -151,9 +151,9 @@ public final class SimulationEngine implements AutoCloseable {
                 Math.min(maxPartitions, Runtime.getRuntime().availableProcessors()));
 
         this.rules = new LifeRules(workers);
-        // The simulation thread spends its life blocked in take()/Future.get() and parks
-        // between generations, so a virtual thread is the right fit: it unmounts from any
-        // carrier while blocked and costs nothing while idle. Virtual threads are daemon
+        // The simulation thread spends its life blocked in take()/Future.get(), so a
+        // virtual thread is the right fit: it unmounts from any carrier while blocked and
+        // costs nothing while idle. Virtual threads are daemon
         // by default, so the JVM can still exit if a shutdown path is missed.
         this.simulationThread = Thread.ofVirtual()
                 .name("conway-simulation")

@@ -47,6 +47,7 @@ toggle it, including while the simulation is running.
 | Start / Stop | Run continuously, or pause |
 | Next generation | Advance exactly one generation |
 | Clear | Empty the board and reset the counter |
+| Quit | Shown in red. Closes the window, which stops the render timer and shuts the engine down |
 
 Live cells are mint, cells that have died turn plum, and cells where nothing has
 ever lived stay near-black.
@@ -78,7 +79,7 @@ flowchart LR
 
     subgraph UI["Swing event dispatch thread"]
         direction TB
-        LifeFrame["LifeFrame<br/>Render timer, sends commands"]
+        LifeFrame["LifeFrame<br/>Timer pulls snapshots via refresh()<br/>Buttons and spinners send commands"]
         BoardView["BoardView<br/>Pixel blit onto BufferedImage"]
     end
 
@@ -100,10 +101,13 @@ flowchart LR
     class Snapshot state
 ```
 
-Commands flow one way, from the UI into the engine's queue. State flows back only
-through `EngineSnapshot`: an immutable bundle published through a single `volatile`
-field. The render loop polls it on a fixed timer; nothing pushes to it, and nothing
-outside the simulation thread ever touches the board directly.
+Commands flow one way, from the UI into the engine's queue. Per-generation board state
+flows back only through `EngineSnapshot`: an immutable bundle published through a single
+`volatile` field, which the render loop polls on a fixed timer — nothing pushes it.
+Lifecycle state is separate: it lives in a second `volatile` (which `close()` also writes,
+from the caller's thread), and each change is pushed through `EngineListener`, whose
+callbacks `LifeFrame` hops onto the EDT with `invokeLater`. Nothing outside the
+simulation thread ever touches the board directly.
 
 ## Design
 
@@ -117,11 +121,11 @@ The application is a single-writer actor with an immutable-snapshot read path.
   `BlockingQueue.take()`, so a queued step request can never be lost and a spurious
   wakeup can never advance the board.
   Threads are split by shape — actor = virtual, workers = `ForkJoinPool`. The actor
-  spends its life blocked in `take()` / `Future.get()` / parking between generations,
-  so a virtual thread unmounts from its carrier while blocked and costs nothing while
-  idle (daemon by default, so the JVM can still exit if a shutdown path is missed).
-  `computeBand` never blocks — pure CPU at roughly 50,000 band dispatches per second,
-  the one case virtual threads do not address — so the band workers are a
+  spends its life blocked in `take()` / `Future.get()`, so a virtual thread unmounts
+  from its carrier while blocked and costs nothing while idle (daemon by default, so the
+  JVM can still exit if a shutdown path is missed).
+  `computeBand` never blocks — pure CPU at tens of thousands of band dispatches per
+  second (about 50–60k at 201), the one case virtual threads do not address — so the band workers are a
   `ForkJoinPool` sized to `min(maxPartitions, core count)`. Work stealing absorbs uneven bands on
   asymmetric cores instead of idling at the per-generation barrier, and per-worker
   deques beat one contended queue; measured 12–19% faster than virtual-thread workers
@@ -225,13 +229,19 @@ Point 3 from above: the EDT has to start, stop and edit the simulation without b
 It cannot call into the simulation thread's state directly — that would just recreate
 the shared-mutable-state problem in the opposite direction.
 
-So every control is a message. `SimulationEngine`'s public methods do nothing except put
-an object on a queue:
+So every control is a message. `SimulationEngine`'s mutating methods — `start`, `pause`,
+`step`, `clear`, `toggleCell`, `place` and `setPartitions` — do nothing beyond checking
+their arguments and putting an object on a queue:
 
 ```java
 public void start() { submit(Command.Signal.START); }
 public void toggleCell(int row, int col) { submit(new Command.ToggleCell(row, col)); }
 ```
+
+The rest of the public surface works differently, by design: `snapshot()`, `stats()` and
+`state()` read published `volatile` fields; `addListener` registers a callback; and
+`sync()` and `close()` deliberately block — one until the queue drains, the other until
+the simulation thread has stopped.
 
 `Command` is a `sealed interface` implemented by an enum of data-free signals and by
 records for the commands that carry data, so the loop that consumes it can `switch` over
@@ -316,7 +326,7 @@ sequenceDiagram
         Sim->>Snap: write EngineSnapshot
     end
 
-    Note over Snap,Sim: Sim never talks to the EDT directly - only this field
+    Note over Snap,Sim: in steady state, Sim reaches the EDT only through this field
 
     loop every frame, about 16ms
         EDT->>Snap: read (volatile)
@@ -325,11 +335,26 @@ sequenceDiagram
     end
 ```
 
-The two loops are independent. Neither ever waits for the other; the only things crossing
-between them are a queue in one direction and a single field in the other.
+In steady state the two loops are independent. Neither waits for the other, and the only
+things crossing between them are a queue in one direction and a single field in the other.
+That describes the running simulation, not every path through the code:
 
-The one exception is lifecycle news — "the engine is now running", "a generation failed".
-Those are pushed through [`EngineListener`](src/main/java/com/conway/engine/EngineListener.java),
+- **Lifecycle news** is pushed rather than polled — see below.
+- **`sync()`** blocks its caller on a latch until the queue drains. The seeder uses it so
+  the first frame of a board already shows the seeded pattern — on the main thread at
+  startup, and on the EDT when the board size changes.
+- **`close()`** joins the simulation thread, and `LifeFrame` calls it on the EDT — when the
+  window closes, and when the board size changes.
+
+So the EDT genuinely waits for the simulation in exactly two situations: closing the
+window, and changing the board size, which closes the old engine and seeds the new one,
+both synchronously. Each wait is short — `close()` returns once the in-flight generation
+finishes, and the board-size control is disabled while a run is in progress.
+- **`Future.get()`**: the simulation thread does wait every generation — for its own band
+  workers, never for the EDT.
+
+The first of those deserves a closer look: lifecycle news — "the engine is now running",
+"a generation failed" — is pushed through [`EngineListener`](src/main/java/com/conway/engine/EngineListener.java),
 and because those callbacks run **on the simulation thread**, `LifeFrame` wraps each one
 in `SwingUtilities.invokeLater` to hop back onto the EDT before touching a component.
 Per-generation updates are deliberately *not* sent this way — that would put the
@@ -398,8 +423,11 @@ them were decided. See [Choosing the executor](#choosing-the-executor).
 > finer than "does adding threads help at all".
 
 Measured on a 201×201 board with the shipping `forkjoin` executor — Apple M2 Pro
-(6 performance + 4 efficiency cores), JDK 25, 300 generations per measurement, best result
-across four interleaved rounds:
+(6 performance + 4 efficiency cores), JDK 25, 300 generations per measurement. Two layers
+of "best of" are involved, and they are different things: each invocation of the harness
+reports its own best of five, measured in ascending partition order inside one JVM as
+described above; each figure below is then the best of **four separate invocations**,
+interleaved with the other executor modes:
 
 | Partitions requested | Bands actually run | Generations/s | Speedup |
 | --- | --- | --- | --- |
@@ -415,15 +443,17 @@ load, so the parallel rows are conservative.
 ### Choosing the executor
 
 The band workers never block, so the choice of executor is a question about dispatch cost
-and load balancing, not about concurrency. All three modes, interleaved to spread
-background load evenly, best of four rounds:
+and load balancing, not about concurrency. All three modes, run round-robin (`platform`,
+`virtual`, `forkjoin`, repeat) so background load falls evenly on each. Every cell is the
+best across separate invocations of the harness, each of which reports its own best of
+five: four invocations of 300 generations for the 201 rows, three of 200 for the 801 rows:
 
 | Board | Partitions | `platform` | `virtual` | `forkjoin` |
 | --- | --- | --- | --- | --- |
 | 201 | 1 | 12,820 | 13,258 | 13,131 |
 | 201 | 2 | 18,300 | 17,722 | **18,421** |
 | 201 | 4 | 17,268 | 17,422 | **19,473** |
-| 201 | 8 | 17,380 | 18,620 | **19,254** |
+| 201 | 8 † | 17,380 | 18,620 | 19,254 |
 | 801 | 4 | 3,191 | 3,226 | 3,216 |
 | 801 | 16 | 3,636 | 3,833 | 3,865 |
 
@@ -431,17 +461,25 @@ Two things to read from this. At 201 with the recommended four partitions, work 
 is worth about 12% over virtual threads on the best figures and nearer 19% on the means —
 a band there is only ~10,000 cells, so dispatch overhead is a real fraction of the work,
 and a `ForkJoinPool`'s per-worker deques beat a fixed pool's single contended queue at
-roughly 50,000 dispatches a second. At 801 all three land within ±2.4%, because a band is
-four times larger and dispatch cost stops mattering.
+tens of thousands of dispatches a second — about 50–60k here, since each generation
+dispatches three of its four bands and computes the fourth inline. At 801 all three land
+within ±4% of each other, because a band is four times larger and dispatch cost stops
+mattering.
+
+† On a 201 board a request for 8 partitions runs the same four bands as a request for 4
+(the band cap, explained below), so this row repeats the 201 | 4 row's work under a
+different label. It is kept to show the run-to-run spread, not as a scaling result, and
+its winner is deliberately not highlighted.
 
 The 1-partition row is the control: it computes inline on the calling thread with no
 dispatch at all, so all three modes agreeing there says the harness is measuring what it
 claims to.
 
-The table stops at 4 on purpose. A generation is split across at most
-`activeRows / 50` bands, so on a 201 board every request of 4 or more runs the *same*
-four bands — rows for 8, 16 and 20 would repeat row 4's work under different labels, and
-any difference between them would be measurement artifact rather than scaling.
+The first table in this section stops at 4 on purpose, and this is also the band cap the †
+row above runs into. A generation is split across at most `activeRows / 50` bands, so on
+a 201 board every request of 4 or more runs the *same* four bands — rows for 8, 16 and 20
+would repeat row 4's work under different labels, and any difference between them would
+be measurement artifact rather than scaling.
 
 **Parallelism buys about 1.5× on this board.** A single generation takes roughly 80 µs,
 which is small enough that task dispatch and the join barrier dominate. The simulation is
@@ -502,6 +540,10 @@ scaling. Only the 1601 row still varies across all six columns.
 
 ## JVM flags
 
+For a full checklist — which flags for which case, which old flags now stop the JVM from
+starting, and the measurements behind each recommendation — see
+[`docs/jvm-options.md`](docs/jvm-options.md).
+
 The application is a Swing GUI with a small, steady allocation rate: two `boolean[]` per
 generation, which on the default board works out to 1.0–1.5 GB/s depending on the rate
 achieved. The default G1 collector already absorbs this with negligible pause (measured
@@ -529,11 +571,17 @@ java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
   at the default board size.
 
 The simulation actor is a virtual thread; the band workers are a `ForkJoinPool` sized to `min(maxPartitions, core count)`
-— split by shape, as above: the actor blocks, the bands never do. A JDK
-21 JFR recording taken while both the actor *and* the band workers
-were virtual captured zero `jdk.VirtualThreadPinned` events with the threshold lowered to
-0 ms, so nothing in the engine's blocking paths pins a carrier. Background in
-[`docs/java21-migration.md`](docs/java21-migration.md).
+— split by shape, as above: the actor blocks, the bands never do. A JDK 21 JFR recording,
+taken earlier when the band workers were still virtual threads alongside the actor,
+captured zero `jdk.VirtualThreadPinned` events with the threshold lowered to 0 ms.
+
+Re-checked with the current `ForkJoinPool` workers: still zero on JDK 21, and **one** on
+JDK 25 — a single 12.8 µs pin inside the JDK's own class loading (a contended `ZipFile`
+monitor while the simulation thread lazily loaded a class), not in the engine's `take()`
+or `Future.get()`. Only JDK 25 could see it: its version of the event also records
+blocking operations such as contended monitor enters — its schema adds a *Blocking
+Operation* field that JDK 21's lacks — so JDK 21's zero is narrower than it looks.
+Background in [`docs/java21-migration.md`](docs/java21-migration.md).
 
 ## Further reading
 
@@ -545,4 +593,5 @@ The engineering behind the design decisions above is written up in `docs/`:
 | [Concurrency features review](docs/concurrency-features-review.md) | Every Java ≤21 concurrency tool weighed against this codebase, including what was rejected and the reason |
 | [Profiling findings](docs/profiling-findings.md) | Analysis of a VisualVM snapshot and thread dump, with the findings a later clean JFR profile overturned marked as such |
 | [Profiling fixes](docs/profiling-issues-fixing-progress.md) | What was done about each finding — incremental rendering, band capping, and the ones deliberately not fixed |
+| [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
 | [Migration plan](docs/java21-migration-plan.md) | The original tracking document for the migration |

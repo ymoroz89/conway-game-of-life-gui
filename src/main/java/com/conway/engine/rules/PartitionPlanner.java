@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 /**
  * Chooses how many row bands a generation should be split across.

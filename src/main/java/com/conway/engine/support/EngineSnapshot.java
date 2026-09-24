@@ -1,4 +1,6 @@
-package com.conway.engine;
+package com.conway.engine.support;
+
+import com.conway.engine.SimulationEngine;
 
 import com.conway.model.Generation;
 
@@ -24,7 +26,7 @@ import com.conway.model.Generation;
  */
 public record EngineSnapshot(Generation generation, SimulationStats stats) {
 
-    static EngineSnapshot initial(int width, int height) {
+    public static EngineSnapshot initial(int width, int height) {
         return new EngineSnapshot(Generation.empty(width, height), SimulationStats.idle());
     }
 }

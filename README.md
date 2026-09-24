@@ -7,7 +7,7 @@ A Swing implementation of Conway's Game of Life with a multithreaded rules engin
 The simulation runs on its own thread and publishes immutable snapshots, so the board
 renders at a steady frame rate no matter how fast generations are produced.
 
-Requires JDK 21 or newer (the engine uses virtual threads and `Math.clamp`).
+Requires JDK 21 or newer
 
 ![The application running a 201×201 board. Two Gosper glider guns in opposite corners fire
 diagonal streams of gliders; live cells are mint, the trails they leave behind are plum.
@@ -21,7 +21,7 @@ partitions.](docs/images/screenshot.png)
 - [Architecture](#architecture)
 - [Design](#design) — how the threading works, and why
 - [Testing](#testing)
-- [Benchmark](#benchmark)
+- [Benchmark](#benchmark) — including how the executor was chosen
 - [JVM flags](#jvm-flags)
 - [Further reading](#further-reading)
 
@@ -87,7 +87,7 @@ flowchart LR
     subgraph ENGINE["Simulation thread — single writer"]
         direction TB
         SimulationEngine["SimulationEngine<br/>Owns the board, processes commands"]
-        LifeRules["LifeRules<br/>Row bands on virtual threads"]
+        LifeRules["LifeRules<br/>Row bands on a ForkJoinPool"]
     end
 
     ENGINE -- publishes --> Snapshot(["EngineSnapshot<br/>volatile · polled every frame by LifeFrame"])
@@ -115,14 +115,24 @@ The application is a single-writer actor with an immutable-snapshot read path.
   the board. It is the only thread that ever mutates simulation state. Everything
   else — the UI, tests — submits commands to a queue. Pausing blocks on
   `BlockingQueue.take()`, so a queued step request can never be lost and a spurious
-  wakeup can never advance the board. Both the simulation actor and the band workers
-  run on virtual threads.
+  wakeup can never advance the board.
+  Threads are split by shape — actor = virtual, workers = `ForkJoinPool`. The actor
+  spends its life blocked in `take()` / `Future.get()` / parking between generations,
+  so a virtual thread unmounts from its carrier while blocked and costs nothing while
+  idle (daemon by default, so the JVM can still exit if a shutdown path is missed).
+  `computeBand` never blocks — pure CPU at roughly 50,000 band dispatches per second,
+  the one case virtual threads do not address — so the band workers are a
+  `ForkJoinPool` sized to the core count. Work stealing absorbs uneven bands on
+  asymmetric cores instead of idling at the per-generation barrier, and per-worker
+  deques beat one contended queue; measured 12–19% faster than virtual-thread workers
+  on the default 201 board at 4 partitions, parity on 801 (see
+  [Benchmark](#benchmark)).
 - **[`Generation`](src/main/java/com/conway/model/Generation.java)** is an immutable
   snapshot published through a single `volatile` field together with its statistics
-  ([`EngineSnapshot`](src/main/java/com/conway/engine/EngineSnapshot.java)). Readers
+  ([`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java)). Readers
   see generation N or N+1 in full, always with the throughput numbers that belong to
   it, and need no lock. Cells are flat `boolean[]` indexed `row * width + col`.
-- **[`LifeRules`](src/main/java/com/conway/engine/LifeRules.java)** splits a generation
+- **[`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)** splits a generation
   into contiguous row bands. Bands write to disjoint slices, so no synchronisation is
   needed between workers; `Future.get()` supplies the happens-before edge. A failing
   band aborts the generation rather than silently producing a wrong board.
@@ -251,7 +261,7 @@ The board is split into contiguous **row bands**. Band *k* reads the previous ge
 bands ever touch the same memory, the workers need no coordination with each other at
 all — no lock, no atomic, nothing.
 
-Two details in [`LifeRules.next`](src/main/java/com/conway/engine/LifeRules.java) that a
+Two details in [`LifeRules.next`](src/main/java/com/conway/engine/rules/LifeRules.java) that a
 diagram would hide:
 
 - The calling thread does not just dispatch and wait. It submits bands 1..N−1 to the
@@ -264,7 +274,7 @@ diagram would hide:
 
 Splitting is a pure work-distribution choice: the resulting board must be identical
 whatever the band count, which is exactly what
-[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/PartitionEquivalenceTest.java)
+[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/rules/PartitionEquivalenceTest.java)
 asserts. That test is the safety net for the whole parallel path.
 
 ### Rendering runs on its own clock
@@ -291,7 +301,7 @@ sequenceDiagram
     participant Queue as Command queue
     participant Snap as volatile snapshot field
     participant Sim as Simulation thread
-    participant Workers as Band workers (virtual threads)
+    participant Workers as Band workers (ForkJoinPool)
 
     User->>EDT: clicks Start
     EDT->>Queue: enqueue Command.Start
@@ -351,7 +361,7 @@ mvn test
 Tests are headless and run on a build agent with no display.
 
 The load-bearing test is
-[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/PartitionEquivalenceTest.java):
+[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/rules/PartitionEquivalenceTest.java):
 partitioning is a work-distribution concern, so the resulting board must not depend on
 how many bands the work was split into. Asserting that directly catches off-by-one
 errors at band boundaries, rows computed twice or skipped, and accidental sharing of
@@ -364,15 +374,19 @@ java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
 ```
 
 Arguments, all optional: grid size, generations per measurement, and the executor —
-`platform` (the default) or `virtual`.
+`platform` (the default), `virtual`, or `forkjoin`.
 
-The default is **not** the path the application takes. `SimulationEngine` always uses a
-virtual-thread-per-task executor, while the harness defaults to a fixed platform pool, so
-measure the shipping configuration explicitly:
+The default is **not** the path the application takes. `SimulationEngine` uses a
+`ForkJoinPool`, while the harness defaults to a fixed platform pool, so measure the
+shipping configuration explicitly:
 
 ```bash
-java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
+java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 forkjoin
 ```
+
+The three modes exist so that a change of executor is settled by measurement rather than
+by argument — which is how both the move to virtual threads and the later move away from
+them were decided. See [Choosing the executor](#choosing-the-executor).
 
 > **Read the numbers as indicative, not precise.** The harness warms up, resets to an
 > identical board before each measurement and takes the best of five — enough to show
@@ -382,21 +396,46 @@ java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
 > between adjacent rows are not reliable. Reach for JMH before drawing any conclusion
 > finer than "does adding threads help at all".
 
-Measured on a 201×201 board with the `virtual` executor — Apple M2 Pro (6 performance +
-4 efficiency cores), JDK 25, 300 generations per measurement, best result across six
-invocations of the harness:
+Measured on a 201×201 board with the shipping `forkjoin` executor — Apple M2 Pro
+(6 performance + 4 efficiency cores), JDK 25, 300 generations per measurement, best result
+across four interleaved rounds:
 
 | Partitions requested | Bands actually run | Generations/s | Speedup |
 | --- | --- | --- | --- |
-| 1 | 1 | 12,886 | 1.00× |
-| 2 | 2 | 17,121 | 1.33× |
-| 4 | 4 | 17,560 | 1.36× |
+| 1 | 1 | 13,131 | 1.00× |
+| 2 | 2 | 18,421 | 1.40× |
+| 4 | 4 | 19,473 | 1.48× |
 
-Read 2 and 4 as tied. Taking the mean of those same six runs instead of the best
-(12,638 / 16,839 / 16,322) flips the order and puts 2 ahead. What the table establishes
-is what splitting the work at all is worth on this board — roughly a third faster — not a
-sharp optimum. The machine also carried about one core of unrelated background load, so
-the parallel rows are conservative.
+What the table establishes is what splitting the work at all is worth on this board —
+roughly half as much again — not a sharp optimum; 2 and 4 are close enough that run-to-run
+spread can reorder them. The machine also carried about one core of unrelated background
+load, so the parallel rows are conservative.
+
+### Choosing the executor
+
+The band workers never block, so the choice of executor is a question about dispatch cost
+and load balancing, not about concurrency. All three modes, interleaved to spread
+background load evenly, best of four rounds:
+
+| Board | Partitions | `platform` | `virtual` | `forkjoin` |
+| --- | --- | --- | --- | --- |
+| 201 | 1 | 12,820 | 13,258 | 13,131 |
+| 201 | 2 | 18,300 | 17,722 | **18,421** |
+| 201 | 4 | 17,268 | 17,422 | **19,473** |
+| 201 | 8 | 17,380 | 18,620 | **19,254** |
+| 801 | 4 | 3,191 | 3,226 | 3,216 |
+| 801 | 16 | 3,636 | 3,833 | 3,865 |
+
+Two things to read from this. At 201 with the recommended four partitions, work stealing
+is worth about 12% over virtual threads on the best figures and nearer 19% on the means —
+a band there is only ~10,000 cells, so dispatch overhead is a real fraction of the work,
+and a `ForkJoinPool`'s per-worker deques beat a fixed pool's single contended queue at
+roughly 50,000 dispatches a second. At 801 all three land within ±2.4%, because a band is
+four times larger and dispatch cost stops mattering.
+
+The 1-partition row is the control: it computes inline on the calling thread with no
+dispatch at all, so all three modes agreeing there says the harness is measuring what it
+claims to.
 
 The table stops at 4 on purpose. A generation is split across at most
 `activeRows / 50` bands, so on a 201 board every request of 4 or more runs the *same*
@@ -429,7 +468,7 @@ shape of the curve. These rows have not been re-measured since the band cap land
 
 At every size the fastest result lands at roughly **fifty rows per band**, and the
 largest board is still improving when it hits the cap. That invariant is the rule
-[`PartitionPlanner`](src/main/java/com/conway/engine/PartitionPlanner.java) implements:
+[`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) implements:
 `clamp(1, rows / 50, maxPartitions)`. It reproduces the measured optimum at all four
 sizes, and it keeps small boards single-threaded instead of paying dispatch cost for
 work that does not exist.
@@ -483,9 +522,12 @@ java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
   pauses come at higher CPU cost, which is fine for an interactive app but pointless
   at the default board size.
 
-The engine uses virtual threads for both the simulation actor and the band workers.
-No pinning was observed in a JFR recording (see
-[`docs/java21-migration.md`](docs/java21-migration.md)).
+The simulation actor is a virtual thread; the band workers are a `ForkJoinPool` sized to
+the core count — split by shape, as above: the actor blocks, the bands never do. A JDK
+21 JFR recording taken while both the actor *and* the band workers
+were virtual captured zero `jdk.VirtualThreadPinned` events with the threshold lowered to
+0 ms, so nothing in the engine's blocking paths pins a carrier. Background in
+[`docs/java21-migration.md`](docs/java21-migration.md).
 
 ## Further reading
 

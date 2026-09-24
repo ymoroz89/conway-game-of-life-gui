@@ -4,10 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -15,6 +14,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.conway.engine.rules.LifeRules;
+import com.conway.engine.support.EngineSnapshot;
+import com.conway.engine.support.SimulationStats;
 import com.conway.model.Generation;
 import com.conway.model.Pattern;
 
@@ -40,16 +42,42 @@ import com.conway.model.Pattern;
  *
  * <p>All public methods are safe to call from any thread.
  *
- * <h2>Virtual threads</h2>
- * Both the simulation thread and the band workers are virtual threads. The simulation
- * thread spends its life blocked in {@code take()}/{@code Future.get()} and parks
- * between generations, so it unmounts from any carrier while blocked and costs nothing
- * while idle. The band workers are pure CPU, but a virtual-thread-per-task executor
- * measured at parity or better than the previous {@code ThreadPoolExecutor} on the
- * {@code GenerationBenchmark} (see docs/java21-migration.md), and it removes the entire
- * pool-sizing apparatus: there is no core size to track, no keepalive, and no
- * unbounded-accumulation bug class. Virtual threads are daemon by default, so the JVM
- * can still exit if a shutdown path is missed.
+ * <h2>Collaborators</h2>
+ * Three responsibilities that are not "own the board" live in their own types:
+ * {@link Command} (the vocabulary callers submit), {@link RunClock} (throughput
+ * accounting for the current run) and {@link EngineListeners} (fan-out of lifecycle
+ * events). What stays here is deliberately not split further: the board, the command loop
+ * that mutates it, and the thread that owns both. Separating those would spread the
+ * single-writer invariant across objects, and the value of that invariant is that it can
+ * be checked by reading one class.
+ *
+ * <h2>Threads</h2>
+ * The simulation thread is a <em>virtual</em> thread: it spends its life blocked in
+ * {@code take()}/{@code Future.get()} and parks between generations, so it unmounts from
+ * any carrier while blocked and costs nothing while idle. Virtual threads are daemon by
+ * default, so the JVM can still exit if a shutdown path is missed.
+ *
+ * <p>The band workers are a <em>{@link ForkJoinPool}</em>, because the work is pure CPU
+ * that never blocks — the case virtual threads do not address. Two properties earn it:
+ *
+ * <ul>
+ *   <li><strong>Work stealing.</strong> Bands are uneven, since {@code computeBand} clips
+ *       rule evaluation to the active region, and the cores are asymmetric (performance
+ *       plus efficiency). A generation ends at a barrier, so the slowest band sets the
+ *       pace; stealing lets a core that finishes early absorb the rest instead of idling.
+ *   <li><strong>Cheaper hand-off.</strong> Per-worker deques avoid the single contended
+ *       queue of a fixed pool, which matters at roughly 50,000 band dispatches a second.
+ * </ul>
+ *
+ * <p>Measured with {@code GenerationBenchmark}'s three executor modes, interleaved: on the
+ * default 201 board this is 12–19% faster than virtual threads at the recommended
+ * partition count, and on an 801 board all three modes land within noise, where bands are
+ * large enough that dispatch cost stops mattering.
+ *
+ * <p>Crucially this does <em>not</em> bring back the {@code ThreadPoolExecutor} sizing
+ * apparatus that the Java 21 migration deleted. Parallelism is fixed at construction from
+ * the core count and never tracks the partition count, so there is still no core size to
+ * keep in sync, no keepalive and no thread factory.
  */
 public final class SimulationEngine implements AutoCloseable {
 
@@ -73,7 +101,7 @@ public final class SimulationEngine implements AutoCloseable {
     }
 
     private final BlockingQueue<Command> commands = new LinkedBlockingQueue<>();
-    private final List<EngineListener> listeners = new CopyOnWriteArrayList<>();
+    private final EngineListeners listeners = new EngineListeners();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ExecutorService workers;
     private final LifeRules rules;
@@ -98,9 +126,7 @@ public final class SimulationEngine implements AutoCloseable {
     private boolean running;
     private boolean shutdownRequested;
     private int partitions = INITIAL_PARTITIONS;
-    private long generationsInRun;
-    private long runStartNanos;
-    private long elapsedNanos;
+    private final RunClock clock = new RunClock();
 
     /**
      * Creates an engine with an empty board and starts its simulation thread paused.
@@ -117,12 +143,12 @@ public final class SimulationEngine implements AutoCloseable {
         this.snapshot = EngineSnapshot.initial(width, height);
         this.board = snapshot.generation();
 
-        // One virtual-thread-per-task executor for the lifetime of the engine. Bands are
-        // pure CPU, so a virtual thread per band is as fast as a platform pool (measured
-        // at parity or better) and needs no sizing: there is no core size to track, no
-        // keepalive, and no unbounded-accumulation bug class. Virtual threads are daemon,
-        // so the JVM can exit even if a shutdown path is missed.
-        this.workers = Executors.newVirtualThreadPerTaskExecutor();
+        // Parallelism is the core count, never the partition count: stealing redistributes
+        // work, so unlike the old ThreadPoolExecutor there is nothing to resize when the
+        // partition control moves. Capped by maxPartitions so a tiny board does not start
+        // more carriers than it can ever use. Daemon by default, as before.
+        this.workers = new ForkJoinPool(
+                Math.min(maxPartitions, Runtime.getRuntime().availableProcessors()));
 
         this.rules = new LifeRules(workers);
         // The simulation thread spends its life blocked in take()/Future.get() and parks
@@ -140,22 +166,22 @@ public final class SimulationEngine implements AutoCloseable {
 
     /** Begins advancing generations continuously. */
     public void start() {
-        submit(Command.Start.INSTANCE);
+        submit(Command.Signal.START);
     }
 
     /** Stops advancing generations. The board is retained. */
     public void pause() {
-        submit(Command.Pause.INSTANCE);
+        submit(Command.Signal.PAUSE);
     }
 
     /** Advances exactly one generation. Requests are queued and never dropped. */
     public void step() {
-        submit(Command.Step.INSTANCE);
+        submit(Command.Signal.STEP);
     }
 
     /** Empties the board and resets the generation counter. */
     public void clear() {
-        submit(Command.Clear.INSTANCE);
+        submit(Command.Signal.CLEAR);
     }
 
     /** Inverts the state of a single cell. Coordinates outside the board are ignored. */
@@ -214,7 +240,7 @@ public final class SimulationEngine implements AutoCloseable {
     }
 
     public void addListener(EngineListener listener) {
-        listeners.add(Objects.requireNonNull(listener, "listener"));
+        listeners.add(listener);
     }
 
     /**
@@ -244,7 +270,7 @@ public final class SimulationEngine implements AutoCloseable {
             return;
         }
         LOG.info("Shutting down simulation engine");
-        commands.add(Command.Shutdown.INSTANCE);
+        commands.add(Command.Signal.SHUTDOWN);
         try {
             simulationThread.join(SHUTDOWN_TIMEOUT_MS);
             if (simulationThread.isAlive()) {
@@ -299,28 +325,25 @@ public final class SimulationEngine implements AutoCloseable {
 
     private void handle(Command command) throws InterruptedException {
         switch (command) {
-            case Command.Start ignored -> {
+            case Command.Signal.START -> {
                 if (!running) {
                     running = true;
-                    generationsInRun = 0L;
-                    elapsedNanos = 0L;
-                    runStartNanos = System.nanoTime();
+                    clock.startRun();
                     LOG.info("Run started with {} partition(s)", partitions);
                     setState(State.RUNNING);
                 }
             }
-            case Command.Pause ignored -> {
+            case Command.Signal.PAUSE -> {
                 if (running) {
                     running = false;
                     logRunSummary();
                 }
                 setState(State.PAUSED);
             }
-            case Command.Step ignored -> advance(false);
-            case Command.Clear ignored -> {
+            case Command.Signal.STEP -> advance(false);
+            case Command.Signal.CLEAR -> {
                 running = false;
-                generationsInRun = 0L;
-                elapsedNanos = 0L;
+                clock.reset();
                 board = Generation.empty(board.width(), board.height());
                 publish(board, new SimulationStats(0L, 0L, 0L, partitions));
                 LOG.info("Board cleared");
@@ -336,11 +359,12 @@ public final class SimulationEngine implements AutoCloseable {
                 if (partitions != setPartitions.count()) {
                     partitions = setPartitions.count();
                     LOG.info("Partition count changed to {}", partitions);
-                    publish(board, new SimulationStats(board.number(), generationsInRun, elapsedNanos, partitions));
+                    publish(board, new SimulationStats(
+                            board.number(), clock.generations(), clock.elapsedNanos(), partitions));
                 }
             }
             case Command.Barrier barrier -> barrier.latch().countDown();
-            case Command.Shutdown ignored -> {
+            case Command.Signal.SHUTDOWN -> {
                 if (running) {
                     running = false;
                     logRunSummary();
@@ -374,20 +398,16 @@ public final class SimulationEngine implements AutoCloseable {
         try {
             Generation next = rules.next(board, partitions);
             if (timed) {
-                generationsInRun++;
-                elapsedNanos = System.nanoTime() - runStartNanos;
+                clock.recordGeneration();
             }
             board = next;
-            publish(next, new SimulationStats(next.number(), generationsInRun, elapsedNanos, partitions));
-        } catch (InterruptedException e) {
-            throw e;
+            publish(next, new SimulationStats(
+                    next.number(), clock.generations(), clock.elapsedNanos(), partitions));
         } catch (RuntimeException e) {
             running = false;
             LOG.error("Generation {} failed; simulation paused", board.number() + 1, e);
             setState(State.FAILED);
-            for (EngineListener listener : listeners) {
-                listener.onError(e);
-            }
+            listeners.error(e);
         }
     }
 
@@ -410,9 +430,7 @@ public final class SimulationEngine implements AutoCloseable {
             return;
         }
         state = newState;
-        for (EngineListener listener : listeners) {
-            listener.onStateChanged(newState);
-        }
+        listeners.stateChanged(newState);
     }
 
     /** Prevents callers blocked in {@link #sync} from waiting forever after shutdown. */
@@ -420,51 +438,9 @@ public final class SimulationEngine implements AutoCloseable {
         List<Command> pending = new ArrayList<>();
         commands.drainTo(pending);
         for (Command command : pending) {
-            if (command instanceof Command.Barrier barrier) {
-                barrier.latch().countDown();
+            if (command instanceof Command.Barrier(CountDownLatch latch)) {
+                latch.countDown();
             }
-        }
-    }
-
-    /**
-     * The complete set of operations the simulation thread understands.
-     *
-     * <p>Modelling these as distinct types replaces the previous
-     * {@code runController(boolean, Boolean)} signature, in which four different
-     * behaviours were encoded in a flag plus a three-valued {@code Boolean}.
-     */
-    private sealed interface Command {
-
-        record Start() implements Command {
-            static final Start INSTANCE = new Start();
-        }
-
-        record Pause() implements Command {
-            static final Pause INSTANCE = new Pause();
-        }
-
-        record Step() implements Command {
-            static final Step INSTANCE = new Step();
-        }
-
-        record Clear() implements Command {
-            static final Clear INSTANCE = new Clear();
-        }
-
-        record Shutdown() implements Command {
-            static final Shutdown INSTANCE = new Shutdown();
-        }
-
-        record ToggleCell(int row, int col) implements Command {
-        }
-
-        record PlacePattern(Pattern pattern, int row, int col) implements Command {
-        }
-
-        record SetPartitions(int count) implements Command {
-        }
-
-        record Barrier(CountDownLatch latch) implements Command {
         }
     }
 }

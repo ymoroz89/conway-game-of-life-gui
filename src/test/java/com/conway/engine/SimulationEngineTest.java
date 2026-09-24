@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import com.conway.engine.support.SimulationStats;
 import com.conway.model.Generation;
 import com.conway.model.Pattern;
 

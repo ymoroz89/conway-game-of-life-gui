@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 import static com.conway.testsupport.Boards.random;
 import static com.conway.testsupport.Boards.render;

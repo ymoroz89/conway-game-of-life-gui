@@ -29,11 +29,11 @@ import org.slf4j.LoggerFactory;
 import com.conway.config.BoardSizeOption;
 import com.conway.config.LifeConfig;
 import com.conway.engine.EngineListener;
-import com.conway.engine.EngineSnapshot;
-import com.conway.engine.PartitionPlanner;
+import com.conway.engine.rules.PartitionPlanner;
+import com.conway.engine.support.EngineSnapshot;
+import com.conway.engine.support.SimulationSeeder;
+import com.conway.engine.support.SimulationStats;
 import com.conway.engine.SimulationEngine;
-import com.conway.engine.SimulationSeeder;
-import com.conway.engine.SimulationStats;
 import com.conway.model.Generation;
 
 /**

@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

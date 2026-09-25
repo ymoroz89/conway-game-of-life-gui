@@ -175,8 +175,9 @@ outside the simulation thread ever touches the board.
 | --- | --- |
 | [`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java) | The actor. Owns the board, drains the command queue, publishes snapshots |
 | [`Command`](src/main/java/com/conway/engine/Command.java) | The sealed vocabulary: a `Signal` enum for data-free commands, records for the rest |
-| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Computes the next generation in row bands; stateless apart from the executor it borrows |
-| [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule behind the default partition count |
+| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Schedules a generation: splits it into row bands, runs them on a borrowed executor, assembles the result |
+| [`BandKernel`](src/main/java/com/conway/engine/rules/BandKernel.java) | The hot loop: applies the rules to one band of rows, clipped to the active region |
+| [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule, both for the default partition count and for the per-generation band cap |
 | [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags, active region, population |
 | [`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java) | A generation and its [`SimulationStats`](src/main/java/com/conway/engine/support/SimulationStats.java), published as one unit |
 | [`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java) | The window: controls, status bar and render timer. Translates gestures into commands |
@@ -341,8 +342,8 @@ The board is split into contiguous **row bands**. Band *k* reads the previous ge
 (which nobody is writing) and writes only its own rows of the new arrays. Because no two
 bands ever touch the same memory, the workers need no lock or atomic between themselves.
 
-Three details in [`LifeRules.next`](src/main/java/com/conway/engine/rules/LifeRules.java)
-that a diagram would hide:
+Three details in how [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)
+runs a generation that a diagram would hide:
 
 - **The caller works too.** The simulation thread does not just dispatch and wait. It
   submits bands 1..N−1 to the executor and then computes **band 0 itself**, so it does
@@ -463,7 +464,7 @@ Each feature below is used where it removes code or closes off a class of bug.
 | Pattern matching for `switch` (JEP 441) | 21 | `SimulationEngine.handle` | Exhaustive dispatch over the sealed `Command` hierarchy |
 | Record patterns (JEP 440) | 21 | `SimulationEngine.releasePendingBarriers` | Matches and destructures `Barrier(CountDownLatch latch)` in one step |
 | Sequenced collections (JEP 431) | 21 | `Pattern.parse` | `getLast()` and `removeLast()` to trim trailing blank rows |
-| `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `LifeRules.bandsFor`, `PartitionPlanner` | One call for every range check on a partition count |
+| `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `PartitionPlanner` | One call for every range check on a partition count |
 | `ExecutorService` as `AutoCloseable` | 19 | `SimulationEngine.close`, `GenerationBenchmark` | Shutdown and await in a single call |
 | Records and sealed interfaces | 16, 17 | `Command`, `EngineSnapshot`, `SimulationStats`, `ActiveRegion`, `BoardSizeOption` | Closed vocabularies and immutable value types without boilerplate |
 
@@ -654,8 +655,8 @@ count — but neither can push past `floor(activeRows / 50)`.
 The engine applies the same rows-per-band rule again on every generation, against the
 **active region** — a padded bounding box of the live cells, not the full grid — and
 computes inline when there is too little live area to fill the bands. A generation is
-split across at most `floor(activeRows / 50)` bands (`bandsFor` floors a too-small region
-to one band before clamping).
+split across at most `floor(activeRows / 50)` bands (`PartitionPlanner.bandsFor` floors a
+too-small region to one band before clamping).
 
 What counts is how many rows the live cells span, not how many live cells there are. A
 board whose live cells span fewer than 100 rows once padded is capped to a single band,

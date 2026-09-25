@@ -8,6 +8,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.io.Serial;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -30,7 +31,12 @@ import java.util.Objects;
  * simulation state directly; the frame pushes an immutable {@link Generation}
  * snapshot in, and repaints only when the snapshot actually changed.
  */
+// Swing components inherit Serializable; this application never serializes them.
+@SuppressWarnings("serial")
 public final class BoardView extends JPanel {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     /**
      * Cells narrower than this are drawn solid. A separator costs one pixel per axis, so

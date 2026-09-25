@@ -5,6 +5,7 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.Serial;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -48,7 +49,11 @@ import com.conway.model.Generation;
  * thread and are marshaled here explicitly.
  */
 // Swing components inherit Serializable; this application never serializes them.
+@SuppressWarnings("serial")
 public final class LifeFrame extends JFrame {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     private static final Logger LOG = LoggerFactory.getLogger(LifeFrame.class);
 

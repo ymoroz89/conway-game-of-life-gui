@@ -1,5 +1,7 @@
 package com.conway.engine.rules;
 
+import com.conway.model.ActiveRegion;
+
 /**
  * Chooses how many row bands a generation should be split across.
  *
@@ -41,9 +43,9 @@ package com.conway.engine.rules;
  * substitute for measuring a deployment that cares. Both the result and the constant
  * can be overridden; see {@code conway.partitions} and {@code conway.minRowsPerPartition}.
  *
- * <p>This value is a recommendation for the board as a whole. {@code LifeRules} applies the
- * same rows-per-band rule again per generation, against the active region rather than the
- * full board, and will use fewer bands when there is not enough live area to fill them. The
+ * <p>{@link #recommend} sizes the board as a whole, once. {@link #bandsFor} applies the same
+ * rows-per-band rule again on every generation, against the active region rather than the
+ * full board, and uses fewer bands when there is not enough live area to fill them. The
  * measurements above were taken before that cap existed, so requesting more partitions than
  * recommended no longer reproduces the slower figures in the table — it is now capped to the
  * recommended count instead.
@@ -90,6 +92,39 @@ public final class PartitionPlanner {
 
         int byWorkload = rows / minRowsPerPartition;
         return Math.clamp(byWorkload, 1, maxPartitions);
+    }
+
+    /**
+     * How many bands to actually split one generation across.
+     *
+     * <p>The requested count is sized for the board, but the work in any one generation is
+     * bounded by the active region, which can be far smaller. Splitting work that is not
+     * there costs a task dispatch and a join per band and returns nothing: on a 201x201
+     * board holding a single blinker, sixteen bands ran 5.4 times slower than computing
+     * inline. So the request is also capped by how many bands the active rows can usefully
+     * fill.
+     *
+     * <p>The threshold is the one {@link #recommend} uses. That was measured against full
+     * boards, where the active region spans nearly everything; this applies the identical
+     * rule to the rows that actually carry work.
+     *
+     * <p>Purely a work-distribution choice: the resulting board is identical whatever this
+     * returns, which is what {@code PartitionEquivalenceTest} pins down.
+     *
+     * @param partitions the requested count, clamped to {@code [1, height]}
+     * @param height     board height in rows
+     * @param active     the padded active region of the generation about to be computed
+     */
+    static int bandsFor(int partitions, int height, ActiveRegion active) {
+        int requested = Math.clamp(partitions, 1, height);
+        if (active.isEmpty()) {
+            return 1;
+        }
+        int activeRows = active.maxRow() - active.minRow() + 1;
+        int useful = activeRows / DEFAULT_MIN_ROWS_PER_PARTITION;
+        // Math.clamp requires min <= max, so a region too small to fill one band (useful == 0)
+        // must be floored to 1 before clamping.
+        return Math.clamp(requested, 1, Math.max(1, useful));
     }
 
     /**

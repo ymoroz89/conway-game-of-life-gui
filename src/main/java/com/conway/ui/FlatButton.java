@@ -5,6 +5,7 @@ import java.awt.Cursor;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.io.Serial;
 
 import javax.swing.JButton;
 
@@ -20,7 +21,11 @@ import javax.swing.JButton;
  * {@link JButton}, so keyboard traversal and screen readers behave normally.
  */
 // Swing components inherit Serializable; this application never serializes them.
+@SuppressWarnings("serial")
 public final class FlatButton extends JButton {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     private static final int CORNER_RADIUS = 8;
 

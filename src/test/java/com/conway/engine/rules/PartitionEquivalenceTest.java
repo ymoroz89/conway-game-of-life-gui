@@ -116,7 +116,7 @@ class PartitionEquivalenceTest {
 
     /** The band count {@link LifeRules#next} will actually use for {@code board}. */
     private static int bandsFor(int partitions, Generation board) {
-        return LifeRules.bandsFor(partitions, board.height(),
+        return PartitionPlanner.bandsFor(partitions, board.height(),
                 board.activeRegion().pad(board.width(), board.height()));
     }
 

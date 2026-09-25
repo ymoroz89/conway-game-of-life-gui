@@ -9,7 +9,7 @@ import java.util.Arrays;
  * thread and the Swing event dispatch thread. All fields are {@code final} and the
  * backing arrays are never mutated after construction, so publishing an instance
  * through a {@code volatile} field guarantees every reader observes a fully
- * initialised, internally consistent generation. Readers never see a half-applied
+ * initialized, internally consistent generation. Readers never see a half-applied
  * generation, and no locking is needed on the render path.
  *
  * <p>Cells carry two independent flags:

@@ -36,7 +36,7 @@ import com.conway.model.Pattern;
  * Swing event dispatch thread to render while the simulation runs.
  *
  * <p>Pausing blocks on {@link BlockingQueue#take()} rather than
- * {@code Object.wait()}, so a step request enqueued at any moment is always honoured:
+ * {@code Object.wait()}, so a step request enqueued at any moment is always honored:
  * there is no window in which a notification can be lost, and no spurious wakeup can
  * advance the board. Requests are queued, never dropped.
  *
@@ -65,7 +65,7 @@ import com.conway.model.Pattern;
  *       rule evaluation to the active region, and the cores are asymmetric (performance
  *       plus efficiency). A generation ends at a barrier, so the slowest band sets the
  *       pace; stealing lets a core that finishes early absorb the rest instead of idling.
- *   <li><strong>Cheaper hand-off.</strong> Per-worker deques avoid the single contended
+ *   <li><strong>Cheaper hand-off.</strong> Per-worker deque avoid the single contended
  *       queue of a fixed pool, which matters at roughly 50,000 band dispatches a second.
  * </ul>
  *

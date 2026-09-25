@@ -45,9 +45,9 @@ import com.conway.model.Generation;
  * the repaint rate is not swamped by the simulation.
  *
  * <p>Confined to the event dispatch thread. Engine callbacks arrive on the simulation
- * thread and are marshalled here explicitly.
+ * thread and are marshaled here explicitly.
  */
-@SuppressWarnings("serial") // Swing components inherit Serializable; this application never serialises them.
+// Swing components inherit Serializable; this application never serializes them.
 public final class LifeFrame extends JFrame {
 
     private static final Logger LOG = LoggerFactory.getLogger(LifeFrame.class);

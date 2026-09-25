@@ -101,6 +101,6 @@ public final class PartitionPlanner {
             throw new IllegalArgumentException("rows must be positive but was " + rows);
         }
         int cores = Runtime.getRuntime().availableProcessors();
-        return Math.min(rows, Math.max(2, cores * 2));
+        return Math.clamp(cores * 2L, 2, rows);
     }
 }

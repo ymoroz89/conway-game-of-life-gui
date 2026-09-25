@@ -12,7 +12,7 @@ import com.conway.model.Generation;
  * {@code volatile} field, so a reader can never observe a new board with stale counters
  * or vice versa. All fields are {@code final} and the record is immutable, so publishing
  * an instance through a {@code volatile} reference gives every reader a fully
- * initialised, internally consistent bundle without any locking.
+ * initialized, internally consistent bundle without any locking.
  *
  * <p>Lifecycle {@link SimulationEngine.State} is deliberately <em>not</em> part of this
  * record: it is written by two threads (the simulation thread and {@code close()} on the

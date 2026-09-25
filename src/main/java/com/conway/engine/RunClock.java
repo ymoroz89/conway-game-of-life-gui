@@ -12,7 +12,7 @@ import com.conway.engine.support.SimulationStats;
  *
  * <h2>Threading</h2>
  * <strong>Not thread-safe, and deliberately so.</strong> An instance is confined to the
- * simulation thread exactly like the board it accompanies, so it needs no synchronisation.
+ * simulation thread exactly like the board it accompanies, so it needs no synchronization.
  * Values leave that thread only by being copied into an immutable {@link SimulationStats}
  * and published through the engine's {@code volatile} snapshot.
  */

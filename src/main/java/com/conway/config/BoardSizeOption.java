@@ -38,7 +38,7 @@ public record BoardSizeOption(int cells, String label) {
      * <p>Always contains {@code configuredCells}. A grid set through
      * {@code -Dconway.gridSize} that is not one of the presets is added rather than
      * silently replaced by one, so the property keeps working; because there is no round
-     * number to show for it, it is labelled with its actual size.
+     * number to show for it, it is labeled with its actual size.
      *
      * @throws IllegalArgumentException if {@code configuredCells} is not positive
      */

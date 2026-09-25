@@ -7,8 +7,8 @@ import com.conway.model.Pattern;
 /**
  * The complete set of operations the simulation thread understands.
  *
- * <p>Modelling these as distinct types replaces an earlier
- * {@code runController(boolean, Boolean)} signature, in which four different behaviours
+ * <p>Modeling these as distinct types replaces an earlier
+ * {@code runController(boolean, Boolean)} signature, in which four different behaviors
  * were encoded in a flag plus a three-valued {@code Boolean}.
  *
  * <p>The vocabulary splits in two. Commands that carry no data are constants of

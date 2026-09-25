@@ -14,7 +14,7 @@ import java.util.Objects;
 /**
  * Renders the board.
  *
- * <p>Painting writes cell colours straight into the {@code int[]} backing a single
+ * <p>Painting writes cell colors straight into the {@code int[]} backing a single
  * {@link BufferedImage} and then performs one scaled blit. The previous implementation
  * issued one {@code fillRect} per cell &mdash; 40k of them for a 201x201 board &mdash;
  * and called {@code getInsets()} inside the loop, allocating an {@code Insets} object
@@ -34,8 +34,8 @@ public final class BoardView extends JPanel {
 
     /**
      * Cells narrower than this are drawn solid. A separator costs one pixel per axis, so
-     * below this size it would consume more of the cell than the cell's own colour and
-     * the board reads as a grey mesh rather than as a population. The threshold is in
+     * below this size it would consume more of the cell than the cell's own color and
+     * the board reads as a gray mesh rather than as a population. The threshold is in
      * logical pixels; the separator itself is scaled with the device.
      */
     private static final int MIN_CELL_SIZE_FOR_GRID = 3;
@@ -93,14 +93,14 @@ public final class BoardView extends JPanel {
         setBackground(Theme.BACKGROUND);
 
         // MouseAdapter, so unused callbacks are genuinely absent. Overriding every
-        // MouseListener method and throwing from the ones that are not needed meant
+        // MouseListener method and throwing from the ones that are not needed to be meant
         // an exception on every pointer entry, exit and click.
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
                 // Mapped through the drawn rectangle rather than the component bounds, so
                 // a press lands on the cell under the pointer even when the component is
-                // wider or taller than the board and the board is inset within it.
+                // wider or taller than the board and the board are inset within it.
                 Rectangle viewport = viewport();
                 int row = geometry.rowAt(e.getY() - viewport.y, viewport.height);
                 int col = geometry.columnAt(e.getX() - viewport.x, viewport.width);
@@ -204,8 +204,8 @@ public final class BoardView extends JPanel {
      *
      * <p>Three paths, cheapest first. If the image already shows this generation there is
      * nothing to do, which covers every repaint caused by exposure, a resize or a focus
-     * change. If the previous generation is the same size, only the cells whose colour
-     * differs are rewritten. Otherwise the whole image is redrawn.
+     * change. If the previous generation is the same size, only the cells whose color
+     * differs are rewritten. Otherwise, the whole image is redrawn.
      *
      * <p>Profiling showed this method rewriting all 40,401 cells and clearing the whole
      * pixel buffer on every paint, while the engine was evaluating around 2% of the board
@@ -249,7 +249,7 @@ public final class BoardView extends JPanel {
     }
 
     /**
-     * Rewrites only the cells whose colour differs between the two generations.
+     * Rewrites only the cells whose color differs between the two generations.
      *
      * <p>The comparison still visits every cell, but it reads two booleans per cell instead
      * of writing {@code inner * inner} pixels, and it skips the full-buffer clear. Both
@@ -288,7 +288,7 @@ public final class BoardView extends JPanel {
     }
 
     /**
-     * Edge of the coloured part of a cell, in physical pixels. One separator along the
+     * Edge of the colored part of a cell, in physical pixels. One separator along the
      * trailing edges only; the previous inset of one pixel on every side left a 4px cell
      * with a 2x2 interior, so three quarters of the board was grid line.
      */

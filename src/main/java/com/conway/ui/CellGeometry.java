@@ -44,7 +44,7 @@ public final class CellGeometry {
     }
 
     private static int indexAt(int position, int extent, int count) {
-        if (extent <= 0 || position < 0 || position >= extent) {
+        if (position < 0 || position >= extent) {
             return NO_CELL;
         }
         int index = (int) (position * (long) count / extent);

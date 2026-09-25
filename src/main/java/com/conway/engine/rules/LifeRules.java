@@ -13,7 +13,7 @@ import com.conway.model.Generation;
  * Computes successive generations of Conway's Game of Life.
  *
  * <p>The board is split into contiguous bands of rows. Each band writes only to its
- * own disjoint slice of the destination arrays, so no synchronisation is needed
+ * own disjoint slice of the destination arrays, so no synchronization is needed
  * between workers; {@link Future#get()} then supplies the happens-before edge that
  * makes every write visible to the thread that assembles the result.
  *
@@ -24,7 +24,7 @@ import com.conway.model.Generation;
  * <p>Boundaries are dead: the grid does not wrap.
  *
  * <p>This class is stateless apart from the executor it borrows, and is safe to call
- * from any thread. In practice it is only ever called from the simulation thread.
+ * from any thread. In practice, it is only ever called from the simulation thread.
  */
 public final class LifeRules {
 
@@ -104,7 +104,7 @@ public final class LifeRules {
                 // Dispatched bands surface as ExecutionException below and are wrapped. This
                 // one runs on the calling thread, so without wrapping it would escape raw and
                 // a failure would report differently depending on which band hit it. The
-                // dispatched bands must not run to completion unseen: mark them cancelled so
+                // dispatched bands must not run to completion unseen: mark them canceled so
                 // a failed generation does not leave wasted work behind.
                 cancelAll(futures);
                 throw new SimulationException("Generation computation failed", e);
@@ -138,7 +138,7 @@ public final class LifeRules {
     }
 
     /**
-     * Marks pending band futures as cancelled because a sibling band failed.
+     * Marks pending band futures as canceled because a sibling band failed.
      *
      * <p>Bands that already completed are no-ops: {@link Future#cancel(boolean)} on a done
      * task does nothing. The interrupt flag is best-effort &mdash; {@code computeBand} never

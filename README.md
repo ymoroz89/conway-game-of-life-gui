@@ -63,7 +63,7 @@ Every setting is a system property; the defaults are shown.
 | `conway.targetFps` | `60` | Repaint rate, independent of the simulation rate |
 | `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | Upper bound for the partition control |
 | `conway.partitions` | chosen per board and machine | Partition count to start with; overrides the recommendation |
-| `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the recommendation |
+| `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the starting recommendation only (see [Benchmark](#how-the-default-partition-count-is-chosen)) |
 | `conway.log.dir` | `logs` | Log directory |
 | `conway.log.level` | `INFO` | Root log level |
 
@@ -106,8 +106,9 @@ flows back only through `EngineSnapshot`: an immutable bundle published through 
 `volatile` field, which the render loop polls on a fixed timer — nothing pushes it.
 Lifecycle state is separate: it lives in a second `volatile` (which `close()` also writes,
 from the caller's thread), and each change is pushed through `EngineListener`, whose
-callbacks `LifeFrame` hops onto the EDT with `invokeLater`. Nothing outside the
-simulation thread ever touches the board directly.
+callbacks `LifeFrame` hops onto the EDT with `invokeLater`. Apart from the engine's own
+band workers, which read the previous generation and write disjoint slices of the next
+one's fresh arrays, nothing outside the simulation thread ever touches the board directly.
 
 ## Design
 
@@ -116,7 +117,9 @@ The application is a single-writer actor with an immutable-snapshot read path.
 ### The classes, at a glance
 
 - **[`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java)** owns
-  the board. It is the only thread that ever mutates simulation state. Everything
+  the board. It is the only thread that ever mutates simulation state — the band
+  workers only fill disjoint slices of the next generation's fresh arrays, which no
+  other thread can see yet. Everything
   else — the UI, tests — submits commands to a queue. Pausing blocks on
   `BlockingQueue.take()`, so a queued step request can never be lost and a spurious
   wakeup can never advance the board.
@@ -137,8 +140,9 @@ The application is a single-writer actor with an immutable-snapshot read path.
   see generation N or N+1 in full, always with the throughput numbers that belong to
   it, and need no lock. Cells are flat `boolean[]` indexed `row * width + col`.
 - **[`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)** splits a generation
-  into contiguous row bands. Bands write to disjoint slices, so no synchronisation is
-  needed between workers; `Future.get()` supplies the happens-before edge. A failing
+  into contiguous row bands. Bands write to disjoint slices, so the workers need no
+  lock or atomic between themselves (the engine's `AtomicBoolean closed` guards shutdown
+  outside the band path); `Future.get()` supplies the happens-before edge. A failing
   band aborts the generation rather than silently producing a wrong board.
 - **[`BoardView`](src/main/java/com/conway/ui/BoardView.java)** writes colours into the
   `int[]` backing one `BufferedImage` and performs a single scaled blit.
@@ -230,8 +234,9 @@ It cannot call into the simulation thread's state directly — that would just r
 the shared-mutable-state problem in the opposite direction.
 
 So every control is a message. `SimulationEngine`'s mutating methods — `start`, `pause`,
-`step`, `clear`, `toggleCell`, `place` and `setPartitions` — do nothing beyond checking
-their arguments and putting an object on a queue:
+`step`, `clear`, `toggleCell`, `place` and `setPartitions` — do nothing beyond validating
+or clamping their arguments where needed (`place` rejects a null pattern, `setPartitions`
+clamps into range) and putting an object on a queue:
 
 ```java
 public void start() { submit(Command.Signal.START); }
@@ -269,8 +274,8 @@ messages.
 
 The board is split into contiguous **row bands**. Band *k* reads the previous generation
 (which nobody is writing) and writes only its own rows of the new arrays. Because no two
-bands ever touch the same memory, the workers need no coordination with each other at
-all — no lock, no atomic, nothing.
+bands ever touch the same memory, the workers need no lock or atomic between themselves
+(the engine's `AtomicBoolean closed` guards shutdown outside the band path).
 
 Two details in [`LifeRules.next`](src/main/java/com/conway/engine/rules/LifeRules.java) that a
 diagram would hide:
@@ -462,9 +467,10 @@ is worth about 12% over virtual threads on the best figures and nearer 19% on th
 a band there is only ~10,000 cells, so dispatch overhead is a real fraction of the work,
 and a `ForkJoinPool`'s per-worker deques beat a fixed pool's single contended queue at
 tens of thousands of dispatches a second — about 50–60k here, since each generation
-dispatches three of its four bands and computes the fourth inline. At 801 all three land
-within ±4% of each other, because a band is four times larger and dispatch cost stops
-mattering.
+dispatches three of its four bands and computes the fourth inline. At 801 a band carries
+four to sixteen times the cells of a 201 band (16 and 4 partitions respectively), so the
+three executors land within ±4% of their mean — 3,191 to 3,226 at 4 partitions, 3,636 to
+3,865 at 16 — because dispatch cost stops mattering.
 
 † On a 201 board a request for 8 partitions runs the same four bands as a request for 4
 (the band cap, explained below), so this row repeats the 201 | 4 row's work under a
@@ -476,7 +482,8 @@ dispatch at all, so all three modes agreeing there says the harness is measuring
 claims to.
 
 The first table in this section stops at 4 on purpose, and this is also the band cap the †
-row above runs into. A generation is split across at most `activeRows / 50` bands, so on
+row above runs into. A generation is split across at most `floor(activeRows / 50)` bands
+(`bandsFor` floors a too-small region to one band before clamping), so on
 a 201 board every request of 4 or more runs the *same* four bands — rows for 8, 16 and 20
 would repeat row 4's work under different labels, and any difference between them would
 be measurement artifact rather than scaling.
@@ -519,21 +526,31 @@ Two consequences worth knowing:
   cap has since made the two equivalent on the default board, because both end up at four
   bands; the planner still earns its place on larger boards, where the request is not
   capped away.
-- The cap deliberately allows more bands than cores. These are asymmetric cores
+- The cap deliberately allows more bands than cores. `hardwareCap` is
+  `min(rows, max(2, 2 × cores))`, so a large board may request up to twice the core
+  count. These are asymmetric cores
   (6 performance + 4 efficiency); since a generation ends at a barrier, an efficiency
   core given an equal share delays everyone, and smaller bands let the faster cores
   absorb proportionally more.
 
-The constant was calibrated on one machine and one JDK. Retune it for a deployment that
-cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partitions=N`.
+The constant was calibrated on one machine and one JDK, and it is less adjustable than the
+two related properties suggest. `-Dconway.minRowsPerPartition=N` and `-Dconway.partitions=N`
+both set only the partition count the application *starts* with: a board-size change
+recomputes it with the built-in 50, and the per-generation cap described next always
+uses 50. So either property can reduce the number of bands — a larger N, or a smaller
+count — but neither can push past `floor(activeRows / 50)`; a request above the cap still
+runs only as many bands as the cap allows.
 
-The engine applies the same rule again per generation, against the *active region* rather
-than the whole board, and computes inline when there is too little live area to fill the
-bands. A sparse board is therefore never split: on a 201×201 grid holding a single blinker,
-sixteen bands ran 5.4 times slower than computing inline.
+The engine applies the same rows-per-band rule again per generation, against the *active
+region* — a padded bounding box of the live cells, not the full grid — and computes inline
+when there is too little live area to fill the bands. What counts is how many rows the
+live cells span, not how many live cells there are: a board whose live cells span fewer
+than 100 rows once padded is capped to a single band, while the default seed, sparse as it
+is, spans all 201 rows and runs four. On a 201×201 grid holding a single blinker, sixteen
+bands ran 5.4 times slower than computing inline.
 
 That cap also means the high-partition columns above no longer measure what they did when
-the table was recorded. A full board now runs at most `rows / 50` bands — four at 201,
+the table was recorded. A full board now caps at `floor(activeRows / 50)` bands — four at 201,
 eight at 401, sixteen at 801 — so on each row every column at or beyond that point repeats
 the same work, and the differences between them are measurement artifact rather than
 scaling. Only the 1601 row still varies across all six columns.

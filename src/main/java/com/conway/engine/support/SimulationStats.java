@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.support;
 
 import java.util.concurrent.TimeUnit;
 

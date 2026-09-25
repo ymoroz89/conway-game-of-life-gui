@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 import static com.conway.testsupport.Boards.random;
 import static com.conway.testsupport.Boards.render;
@@ -27,10 +27,18 @@ import com.conway.model.Generation;
  * directly catches off-by-one errors at band boundaries, rows that are skipped or
  * computed twice, and any accidental sharing of mutable state between workers —
  * the exact class of defect that partition arithmetic has historically produced here.
+ *
+ * <p>The boards must be tall enough to be split at all. {@link LifeRules} only runs a band
+ * per {@link PartitionPlanner#DEFAULT_MIN_ROWS_PER_PARTITION} active rows, so a board under
+ * 100 rows computes every request as one inline band and this test would compare the
+ * single-threaded path with itself. Each parameterised case therefore asserts the band
+ * count it expects before comparing boards.
  */
 class PartitionEquivalenceTest {
 
-    private static final int BOARD_SIZE = 37;
+    /** Odd, so no band count in range divides it evenly; allows up to eight bands. */
+    private static final int BOARD_SIZE = 401;
+    private static final int MAX_BANDS = BOARD_SIZE / PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION;
     private static final int GENERATIONS = 12;
     private static final long SEED = 20_260_728L;
 
@@ -51,12 +59,14 @@ class PartitionEquivalenceTest {
     }
 
     @ParameterizedTest(name = "{0} partitions produce the single-threaded result")
-    @ValueSource(ints = {2, 3, 4, 5, 7, 8, 16, 36, 37})
+    @ValueSource(ints = {2, 3, 4, 5, 6, 7, 8})
     void partitioningDoesNotChangeTheResult(int partitions) throws Exception {
         List<Generation> expected = singleThreadedRun();
 
         Generation actual = seed();
         for (int generation = 0; generation < GENERATIONS; generation++) {
+            assertEquals(Math.min(partitions, MAX_BANDS), bandsFor(partitions, actual),
+                    "The band cap collapsed the request; the parallel path is not being tested");
             actual = rules.next(actual, partitions);
             assertEquals(render(expected.get(generation)), render(actual),
                     "Diverged from the single-threaded result at generation " + (generation + 1)
@@ -90,16 +100,24 @@ class PartitionEquivalenceTest {
     @Test
     @DisplayName("Every row is computed exactly once, including on a non-square board")
     void nonSquareBoardsPartitionCorrectly() throws Exception {
-        Generation start = random(23, 41, new Random(SEED), 0.35d);
+        // 307 rows allow six bands of 51 or 52 rows; the width is deliberately different.
+        Generation start = random(131, 307, new Random(SEED), 0.35d);
 
         Generation expected = start;
         Generation actual = start;
         for (int generation = 0; generation < GENERATIONS; generation++) {
+            assertEquals(6, bandsFor(6, actual), "The band cap collapsed the request");
             expected = rules.next(expected, 1);
             actual = rules.next(actual, 6);
             assertEquals(render(expected), render(actual),
                     "Non-square board diverged at generation " + (generation + 1));
         }
+    }
+
+    /** The band count {@link LifeRules#next} will actually use for {@code board}. */
+    private static int bandsFor(int partitions, Generation board) {
+        return LifeRules.bandsFor(partitions, board.height(),
+                board.activeRegion().pad(board.width(), board.height()));
     }
 
     private static Generation seed() {

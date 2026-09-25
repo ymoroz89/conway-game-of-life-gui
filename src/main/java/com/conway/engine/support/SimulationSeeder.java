@@ -1,4 +1,6 @@
-package com.conway.engine;
+package com.conway.engine.support;
+
+import com.conway.engine.SimulationEngine;
 
 import java.util.concurrent.TimeUnit;
 

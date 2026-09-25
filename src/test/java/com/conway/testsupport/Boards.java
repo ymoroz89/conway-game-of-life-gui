@@ -37,14 +37,13 @@ public final class Boards {
 
     /** Builds a reproducible random board with the given live-cell probability. */
     public static Generation random(int width, int height, Random random, double density) {
-        Generation board = Generation.empty(width, height);
-        for (int row = 0; row < height; row++) {
-            for (int col = 0; col < width; col++) {
-                if (random.nextDouble() < density) {
-                    board = board.withCell(row, col, true);
-                }
-            }
+        // Filled directly, in the same row-major order, rather than through withCell: that
+        // copies the whole board per live cell, which is quadratic and too slow for boards
+        // tall enough to be split into bands.
+        boolean[] alive = new boolean[Math.multiplyExact(width, height)];
+        for (int i = 0; i < alive.length; i++) {
+            alive[i] = random.nextDouble() < density;
         }
-        return board;
+        return Generation.adopt(width, height, alive, alive.clone(), 0L);
     }
 }

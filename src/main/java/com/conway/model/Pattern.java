@@ -46,8 +46,8 @@ public final class Pattern {
                 rows.add(line);
             }
         }
-        while (!rows.isEmpty() && rows.get(rows.size() - 1).isBlank()) {
-            rows.remove(rows.size() - 1);
+        while (!rows.isEmpty() && rows.getLast().isBlank()) {
+            rows.removeLast();
         }
         if (rows.isEmpty()) {
             throw new IllegalArgumentException("Pattern '" + name + "' contains no cell rows");

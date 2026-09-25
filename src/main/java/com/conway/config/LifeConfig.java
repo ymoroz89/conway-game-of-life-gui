@@ -3,7 +3,7 @@ package com.conway.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.conway.engine.PartitionPlanner;
+import com.conway.engine.rules.PartitionPlanner;
 
 /**
  * Externalised application settings.
@@ -109,7 +109,7 @@ public final class LifeConfig {
     /**
      * Partition count the application starts with, sized for this board on this machine.
      *
-     * @see com.conway.engine.PartitionPlanner
+     * @see com.conway.engine.rules.PartitionPlanner
      */
     public int defaultPartitions() {
         return defaultPartitions;

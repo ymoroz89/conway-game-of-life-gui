@@ -1,8 +1,66 @@
 # Conway's Game of Life
 
-A Swing implementation of Conway's Game of Life with a multithreaded rules engine.
+**A multithreaded Swing implementation of Conway's Game of Life — and a worked example of
+lock-free, single-writer concurrency on modern Java.**
 
-## Running
+![Java 21+](https://img.shields.io/badge/Java-21%2B-orange)
+![Build: Maven](https://img.shields.io/badge/build-Maven-blue)
+![Tests: JUnit 5](https://img.shields.io/badge/tests-JUnit%205-green)
+![UI: Swing](https://img.shields.io/badge/UI-Swing-lightgrey)
+
+The simulation runs on its own thread and publishes immutable snapshots, so the window
+repaints at a steady frame rate no matter how fast generations are produced — more than
+ten thousand a second on the default board. Each generation is split into row bands on a
+`ForkJoinPool`, the renderer writes pixels straight into an image buffer and redraws only
+the cells that changed, and the whole path from engine to screen is one `volatile` read.
+
+![The application running a 201×201 board. Two Gosper glider guns in opposite corners fire
+diagonal streams of gliders; live cells are mint, the trails they leave behind are plum.
+The status bar reads 27,065 generations at 17,677 generations per second across 4
+partitions.](docs/images/screenshot.png)
+
+## Highlights
+
+- **Single-writer actor.** One virtual thread owns the board. The UI never touches its
+  state: buttons, spinners and clicks become commands on a `BlockingQueue`.
+- **Lock-free read path.** Each generation is published together with its statistics as one
+  immutable `EngineSnapshot`, through one `volatile` field. The event dispatch thread reads
+  it without a lock and can never observe a half-built board.
+- **Data-parallel generations.** Row bands run on a `ForkJoinPool` while the simulation
+  thread computes one band itself; `Future.get()` supplies the happens-before edge.
+- **Work sized to the live area.** Rule evaluation is clipped to a padded bounding box of the
+  live cells, and the band count is capped by how many rows that box spans, so a small
+  pattern on a large board runs inline instead of being split into empty bands.
+- **Rendering on its own clock.** A Swing `Timer` pulls the newest snapshot 60 times a
+  second. Generations produced between frames are skipped, never queued.
+- **An incremental, HiDPI renderer.** Packed RGB goes straight into the `int[]` behind one
+  `BufferedImage` at the display's scale factor, and only cells whose colour changed are
+  rewritten.
+- **Compiler-checked commands.** A `sealed` command hierarchy is consumed by an exhaustive
+  pattern-matching `switch`: a command that is not handled does not compile.
+- **Decisions settled by measurement.** A benchmark harness with three executor modes chose
+  the executor and derived the partition rule. The numbers, and their caveats, are below.
+- **122 headless tests**, including an equivalence test that runs 2 to 8 parallel bands
+  against the single-threaded result.
+
+## Contents
+
+- [Quick start](#quick-start) — build, run, controls
+- [Configuration](#configuration) — every system property
+- [Architecture](#architecture) — threads, components, data flow
+- [Design: how the threading works, and why](#design-how-the-threading-works-and-why) — the
+  interesting part
+- [Modern Java, where it earns its place](#modern-java-where-it-earns-its-place)
+- [Testing](#testing)
+- [Performance](#performance) — the benchmark, and how the executor and partition rule were
+  chosen
+- [JVM tuning](#jvm-tuning)
+- [Further reading](#further-reading)
+
+## Quick start
+
+**Requirements:** JDK 21 or newer, and Maven. The application needs a display; the tests
+do not.
 
 ```bash
 mvn clean package
@@ -12,89 +70,409 @@ mvn clean package
 java -jar target/GuiLife.jar
 ```
 
-The jar is self-contained; no sibling `libs/` directory is needed.
+`package` runs the test suite and builds a self-contained (shaded) jar, so no sibling
+`libs/` directory is needed.
 
-The board starts with two Gosper glider guns in opposite corners. Click any cell to
-toggle it, including while the simulation is running.
+The board opens with two Gosper glider guns in opposite corners. Click any cell to toggle
+it — including while the simulation is running, because an edit is queued to the
+simulation thread like every other command.
 
-| Control | Effect |
-| --- | --- |
-| Board size | Board edge in cells: 200, 400 or 800. Changing it restarts the simulation on a fresh board, and is only available while stopped |
-| Parallel partitions | Number of row bands each generation is split across; defaults to a value chosen for the board and machine, and re-derived whenever the board size changes |
-| Start / Stop | Run continuously, or pause |
-| Next generation | Advance exactly one generation |
-| Clear | Empty the board and reset the counter |
+### Controls
 
-Live cells are mint, cells that have died fade to plum, and cells where nothing has
-ever lived stay near-black.
+| Control | Mnemonic | Effect |
+| --- | --- | --- |
+| Board size | — | 200, 400 or 800 (simulated as 201, 401 or 801 cells; the extra cell is a grid detail). Changing it discards the run and seeds a fresh board |
+| Parallel partitions | — | Row bands each generation is split across. Defaults to a value chosen for the board and machine, and is re-derived whenever the board size changes |
+| Start / Stop | S / T | Run continuously, or pause |
+| Next generation | N | Advance exactly one generation |
+| Clear | C | Empty the board and reset the generation counter |
+| Quit | Q | Shown in red. Closes the window, which stops the render timer and shuts the engine down |
 
-## JVM flags
+While a run is in progress only Stop, Quit and cell editing stay enabled; everything else
+becomes available again once the simulation is stopped.
 
-The application is a Swing GUI with a small, steady allocation rate (two `boolean[]`
-per generation, ~1.5 GB/s at full throughput). The default G1 collector handles this
-with negligible pause (measured ~1.6 ms max per collection, a few ms total over a
-20 s run). Recommended flags for a smooth interactive experience:
+The status bar shows the generation number, generations per second over the current run
+(manual steps are excluded, so think time does not skew it), the population, the partition
+count and whether the engine is running. The partition figure is the count *requested*:
+the engine runs fewer bands when the live cells span too few rows to fill them (see
+[the band cap](#the-per-generation-band-cap)).
 
-```bash
-java -Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
-```
-
-- `-Xms256m -Xmx1g` — bound the heap so the JVM never grows unboundedly. The board
-  is at most 10,000×10,000 cells, so a gigabyte is generous.
-- `-XX:MaxGCPauseMillis=20` — keep G1 pauses under the frame budget.
-- `-XX:+UseZGC` — optional alternative for very large boards; ZGC's sub-millisecond
-  pauses come at higher CPU cost, which is fine for an interactive app but pointless
-  at the default board size.
-
-The engine uses virtual threads for both the simulation actor and the band workers.
-No pinning was observed in a JFR recording (see `docs/java21-migration.md`).
+Live cells are mint, cells that have died turn plum, and cells where nothing has ever
+lived stay near-black. A cell you switch off yourself reverts to near-black rather than
+plum.
 
 ## Configuration
 
-Every setting is a system property; the defaults are shown.
+Every setting is a system property. A numeric value that does not parse, or falls outside
+its range, is ignored with a logged warning and the default is used instead.
 
-| Property | Default | Meaning |
-| --- | --- | --- |
-| `conway.gridSize` | `201` | Board width and height in cells; also the size selected on startup. A value that is not one of the presets is added to the board-size control rather than replaced |
-| `conway.boardSizePx` | `1000` | Target board size in pixels; cell size is derived |
-| `conway.targetFps` | `60` | Repaint rate, independent of the simulation rate |
-| `conway.maxPartitions` | `min(gridSize, 2 × cores)` | Upper bound for the partition control |
-| `conway.partitions` | chosen per board and machine | Partition count to start with; overrides the recommendation |
-| `conway.minRowsPerPartition` | `50` | Rows a band needs before splitting again pays off; retunes the recommendation |
-| `conway.log.dir` | `logs` | Log directory |
-| `conway.log.level` | `INFO` | Root log level |
+| Property | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `conway.gridSize` | `201` | 3–10,000 | Board width and height in cells, and the size selected on startup. A value that is not a preset is added to the board-size control rather than replaced |
+| `conway.boardSizePx` | `1000` | 50–20,000 | Target board size in pixels; cell size is `max(1, boardSizePx / gridSize)` |
+| `conway.targetFps` | `60` | 1–240 | Repaint rate, independent of the simulation rate |
+| `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | 1–`gridSize` | Upper bound for the partition control. The band workers' parallelism is `min(maxPartitions, cores)` |
+| `conway.partitions` | `clamp(gridSize / minRowsPerPartition, 1, maxPartitions)` | 1–`maxPartitions` | Partition count for the startup board; overrides the recommendation |
+| `conway.minRowsPerPartition` | `50` | 1–`gridSize` | Rows a band needs before splitting again pays off. Retunes the startup recommendation only ([why](#how-the-default-partition-count-is-chosen)) |
+| `conway.log.dir` | `logs` | — | Directory for `conway-life.log`, rolled daily and at 10 MB, with 14 days kept |
+| `conway.log.level` | `INFO` | — | Root log level |
 
 ```bash
 java -Dconway.gridSize=401 -Dconway.log.level=DEBUG -jar target/GuiLife.jar
 ```
 
-## Design
+## Architecture
 
-The application is a single-writer actor with an immutable-snapshot read path.
+```mermaid
+flowchart LR
+    user(["User input"]) --> UI
 
-- **`SimulationEngine`** owns the board. It is the only thread that ever mutates
-  simulation state. Everything else — the UI, tests — submits commands to a queue.
-  Pausing blocks on `BlockingQueue.take()`, so a queued step request can never be
-  lost and a spurious wakeup can never advance the board. Both the simulation actor
-  and the band workers run on virtual threads.
-- **`Generation`** is an immutable snapshot published through a single `volatile`
-  field together with its statistics (`EngineSnapshot`). Readers see generation N or
-  N+1 in full, always with the throughput numbers that belong to it, and need no
-  lock. Cells are flat `boolean[]` indexed `row * width + col`.
-- **`LifeRules`** splits a generation into contiguous row bands. Bands write to
-  disjoint slices, so no synchronisation is needed between workers; `Future.get()`
-  supplies the happens-before edge. A failing band aborts the generation rather than
-  silently producing a wrong board.
-- **`BoardView`** writes colours into the `int[]` backing one `BufferedImage` and
-  performs a single scaled blit.
-- **`LifeFrame`** pulls the newest snapshot on a fixed timer. The simulation is not
-  throttled by the repaint rate, and the repaint rate is not swamped by the
-  simulation.
+    subgraph UI["Swing event dispatch thread"]
+        direction TB
+        LifeFrame["LifeFrame<br/>Timer pulls snapshots via refresh()<br/>Buttons and spinners send commands"]
+        BoardView["BoardView<br/>Pixel blit onto BufferedImage"]
+    end
 
-The grid is bounded, not toroidal: neighbours off the edge count as dead.
+    UI -- commands --> ENGINE
 
-Patterns are data, in the plaintext [`.cells`](src/main/resources/patterns) format,
-not hard-coded index assignments.
+    subgraph ENGINE["Simulation thread — single writer"]
+        direction TB
+        SimulationEngine["SimulationEngine<br/>Owns the board, processes commands"]
+        LifeRules["LifeRules<br/>Row bands on a ForkJoinPool"]
+    end
+
+    ENGINE -- publishes --> Snapshot(["EngineSnapshot<br/>volatile · polled every frame by LifeFrame"])
+
+    classDef orchestrator fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+    classDef worker fill:#FBEAF0,stroke:#993556,color:#4B1528
+    classDef state fill:#EEEDFE,stroke:#534AB7,color:#26215C
+    class LifeFrame,SimulationEngine orchestrator
+    class BoardView,LifeRules worker
+    class Snapshot state
+```
+
+Commands flow one way, from the UI into the engine's queue. Per-generation state flows
+back only through `EngineSnapshot`, an immutable bundle published through a single
+`volatile` field that the render loop polls on a fixed timer — nothing pushes it.
+Lifecycle state (paused, running, stopped, failed) is separate: it lives in a second
+`volatile`, and each change is pushed to an `EngineListener`, which `LifeFrame` re-dispatches
+onto the EDT with `invokeLater`. Apart from the engine's own band workers — which read the
+previous generation and write disjoint slices of the next one's fresh arrays — nothing
+outside the simulation thread ever touches the board.
+
+### Threads
+
+| Thread | Kind | Work | Blocks on |
+| --- | --- | --- | --- |
+| Event dispatch thread | Swing | Input, the render timer, all painting | Nothing in steady state; `sync()` and `close()` only when the board size changes or the window closes |
+| `conway-simulation` | Virtual | Owns the board, applies commands, computes band 0 of each generation, publishes snapshots | `take()` while paused; `Future.get()` on its band workers while running |
+| Band workers | `ForkJoinPool`, parallelism `min(maxPartitions, cores)` | Bands 1…N−1 of each generation | Never — pure CPU |
+| `main` | Platform | Reads configuration, builds the engine, seeds the first board, hands off to the EDT | `sync()`, once, until the seed is on the board |
+
+### Components
+
+| Component | Role |
+| --- | --- |
+| [`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java) | The actor. Owns the board, drains the command queue, publishes snapshots |
+| [`Command`](src/main/java/com/conway/engine/Command.java) | The sealed vocabulary: a `Signal` enum for data-free commands, records for the rest |
+| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Computes the next generation in row bands; stateless apart from the executor it borrows |
+| [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule behind the default partition count |
+| [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags, active region, population |
+| [`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java) | A generation and its [`SimulationStats`](src/main/java/com/conway/engine/support/SimulationStats.java), published as one unit |
+| [`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java) | The window: controls, status bar and render timer. Translates gestures into commands |
+| [`BoardView`](src/main/java/com/conway/ui/BoardView.java) | The incremental pixel renderer and pointer-to-cell mapping |
+| [`GenerationBenchmark`](src/main/java/com/conway/bench/GenerationBenchmark.java) | Headless throughput harness with three executor modes |
+
+The grid is bounded, not toroidal: neighbours off the edge count as dead. Patterns are
+data — plaintext [`.cells`](src/main/resources/patterns) resources — not hard-coded index
+assignments.
+
+## Design: how the threading works, and why
+
+The application is a single-writer actor with an immutable-snapshot read path. This
+section explains *why* it is shaped that way. If you have not written a multithreaded GUI
+before, this is the interesting part.
+
+### The one constraint everything follows from
+
+Swing has one rule that shapes everything: **only the event dispatch thread (the EDT) may
+touch a Swing component.** That thread is also the one that delivers button clicks and
+repaints the window. So if you compute a generation directly inside a button's
+`ActionListener`, the EDT is busy doing that work and cannot repaint or respond to
+anything — the window goes grey and the OS reports it as not responding.
+
+Meanwhile, a Game of Life board is real CPU work, repeated forever: at the default
+201×201 board the engine produces thousands of generations per second, each one
+touching tens of thousands of cells.
+
+Those two facts force the shape of the whole application:
+
+1. The simulation must run on its **own thread**, not the EDT.
+2. The EDT must be able to **display** the board without waiting for that thread.
+3. The EDT must be able to **control** the simulation without waiting for it either.
+
+Every pattern below is an answer to one of those three points.
+
+### What breaks if you just share the board
+
+The obvious first attempt is one board that both threads use — the simulation thread
+writing cells, the EDT reading them to paint. It fails two ways, and the second is the
+dangerous one.
+
+**1. Torn reads.** Writing a single `boolean` into an array is atomic, so no one cell is
+ever half-written. But nothing makes the board *as a whole* atomic. The simulation thread
+needs thousands of writes to finish generation N+1, and the EDT can paint partway through
+— producing a frame that is part N, part N+1. Not a stale board: one that never existed.
+Gliders tear in half.
+
+**2. Visibility.** Without `volatile` or a lock, the Java Memory Model gives **no
+guarantee that one thread's write is ever seen by another**. The JIT may hoist the read
+out of the render loop, and each core has its own caches. A perfectly legal outcome is
+the EDT painting the starting board forever while the simulation runs behind it — and the
+code looks correct the whole time.
+
+Locking fixes both, at a price: the EDT blocks on a lock held by a thread mutating
+thousands of times a second, and every future access has to remember to take it.
+
+### The fix: never mutate what another thread can see
+
+Instead of guarding mutation, this codebase removes it. `LifeRules` builds each new board
+in *fresh* arrays and transfers ownership via `Generation.adopt(...)`, so a published
+`Generation` is never written to again. The entire handoff to other threads is one
+assignment:
+
+```java
+private volatile EngineSnapshot snapshot;
+
+private void publish(Generation generation, SimulationStats stats) {
+    snapshot = new EngineSnapshot(generation, stats);
+}
+```
+
+It works because of a JMM rule called **safe publication**: writing a reference to a
+`volatile` field guarantees that everything the writing thread did *before* that write —
+including fully constructing the object — is visible to any thread that later reads the
+field. A reader therefore gets a completely built `Generation`, or the previous one.
+Never a mixture.
+
+And because the object is immutable, there is no *second* problem: once you hold it,
+nothing can change it under you. There is nothing left to lock.
+
+Two consequences worth noticing in the code:
+
+- The board and its statistics are bundled into one `EngineSnapshot` rather than
+  published as two fields, so the status bar can never show generation N+1's number
+  next to generation N's population.
+- Because a new instance is published per change, `BoardView.setGeneration` can test
+  `generation != displayed` — plain reference identity — to decide whether anything
+  changed. No deep comparison needed.
+
+### Commands travel the other way, through a queue
+
+Point 3 from above: the EDT has to start, stop and edit the simulation without blocking.
+It cannot call into the simulation thread's state directly — that would just recreate
+the shared-mutable-state problem in the opposite direction.
+
+So every control is a message. `SimulationEngine`'s mutating methods — `start`, `pause`,
+`step`, `clear`, `toggleCell`, `place` and `setPartitions` — do nothing beyond validating
+or clamping their arguments where needed (`place` rejects a null pattern, `setPartitions`
+clamps into range) and putting an object on a queue:
+
+```java
+public void start() { submit(Command.Signal.START); }
+public void toggleCell(int row, int col) { submit(new Command.ToggleCell(row, col)); }
+```
+
+The rest of the public surface works differently, by design: `snapshot()`,
+`currentGeneration()`, `stats()` and `state()` read published `volatile` fields;
+`addListener` registers a callback; and `sync()` and `close()` deliberately block — one
+until every earlier command has been processed, the other until the simulation thread has
+stopped.
+
+`Command` is a `sealed interface` implemented by an enum of data-free signals and by
+records for the commands that carry data, so the loop that consumes it can `switch` over
+every case with the compiler checking that none was forgotten. The EDT returns from
+`start()` in microseconds, whatever the engine is doing.
+
+The consuming loop has one detail worth studying:
+
+```java
+Command command = running ? commands.poll() : commands.take();
+```
+
+- **Running:** `poll()` returns `null` immediately if no command is waiting, so the loop
+  falls through and computes the next generation. Commands are still picked up between
+  generations.
+- **Paused:** `take()` *blocks* until something arrives. An idle engine therefore burns
+  no CPU at all, and — unlike a `wait()`/`notify()` pair — a step request that arrives at
+  an awkward moment cannot be lost, because it is sitting in the queue rather than being
+  a notification that may have already fired.
+
+This is the **actor** pattern: one thread owns the state, and everyone else sends it
+messages.
+
+### Two kinds of thread, chosen by shape
+
+The simulation thread spends its life blocked — in `take()` while paused, in
+`Future.get()` while its band workers finish — so it is a **virtual thread**: it unmounts
+from its carrier while blocked and costs nothing while idle. Virtual threads are daemon
+threads, so the JVM can still exit if a shutdown path is missed.
+
+The band workers are the opposite shape. `computeBand` never blocks: it is pure CPU, at
+tens of thousands of band dispatches per second (about 50–60k on the default board) —
+exactly the case virtual threads do not address. They run on a dedicated
+**`ForkJoinPool`**, for two reasons:
+
+- **Work stealing.** Bands are uneven, because rule evaluation is clipped to the active
+  region, and the reference machine's cores are asymmetric (6 performance + 4
+  efficiency). A generation ends at a barrier, so the slowest band sets the pace;
+  stealing lets a worker that finishes early absorb the rest instead of idling.
+- **Cheaper hand-off.** Per-worker deques avoid the single contended queue of a fixed
+  pool.
+
+Measured, this is 12–19% faster than virtual-thread workers on the default board at four
+partitions, and at parity on an 801 board ([numbers](#choosing-the-executor)). The pool's
+parallelism is fixed at construction as `min(maxPartitions, cores)`, so nothing has to be
+resized when the partition control moves.
+
+### Inside one generation: parallelism without locks
+
+The board is split into contiguous **row bands**. Band *k* reads the previous generation
+(which nobody is writing) and writes only its own rows of the new arrays. Because no two
+bands ever touch the same memory, the workers need no lock or atomic between themselves.
+
+Three details in [`LifeRules.next`](src/main/java/com/conway/engine/rules/LifeRules.java)
+that a diagram would hide:
+
+- **The caller works too.** The simulation thread does not just dispatch and wait. It
+  submits bands 1..N−1 to the executor and then computes **band 0 itself**, so it does
+  useful work instead of parking for the whole generation.
+- **Joining is what makes the result safe to read.** `Future.get()` blocks until that band
+  is done *and* establishes a happens-before edge, which is the guarantee that the
+  worker's writes are visible to the joining thread. Band 0 needs no join because the
+  same thread wrote it.
+- **Failure is loud.** If any band throws, the bands still pending are cancelled and the
+  generation is abandoned as a `SimulationException` — never published half-computed.
+  The engine pauses and enters `FAILED`, and `LifeFrame` shows an error dialog.
+
+Splitting is a pure work-distribution choice: the resulting board must be identical
+whatever the band count, which is exactly what
+[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/rules/PartitionEquivalenceTest.java)
+asserts. That test is the safety net for the whole parallel path.
+
+### Rendering runs on its own clock
+
+A tempting design is "compute a generation, repaint, repeat". This codebase deliberately
+does not do that. `LifeFrame` starts a Swing `Timer` at `conway.targetFps` (60 by
+default) and, on each tick, reads whatever has been published:
+
+```java
+EngineSnapshot snapshot = engine.snapshot();   // one volatile read
+```
+
+If the engine produced 300 generations since the last tick, 299 are simply never drawn —
+and that is correct, because the display cannot show them anyway. The benefit runs both
+ways: the simulation is never throttled by repaint backpressure, and the timer coalesces
+its ticks, so the EDT never has a frame backlog to work through.
+
+Each frame is also cheap. `BoardView` remembers the generation its image already shows: a
+repaint caused by exposure or a resize just re-blits that image, and a new generation of
+the same size rewrites only the cells whose colour changed. The image is rendered at the
+display's scale factor, so cells stay crisp on a Retina screen, and it is letterboxed into
+the window, so cells stay square at any window size.
+
+### Trace: one click, end to end
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant EDT as Event dispatch thread
+    participant Queue as Command queue
+    participant Snap as volatile snapshot field
+    participant Sim as Simulation thread
+    participant Workers as Band workers (ForkJoinPool)
+
+    User->>EDT: clicks Start
+    EDT->>Queue: enqueue SetPartitions, then Signal.START
+    Note over EDT: returns immediately - EDT is free
+    Sim->>Queue: take()
+    Queue-->>Sim: SetPartitions, then Signal.START
+
+    loop every generation
+        Sim->>Workers: dispatch bands 1..N-1, then compute band 0 itself
+        Workers-->>Sim: Future.get() joins (happens-before)
+        Sim->>Snap: write EngineSnapshot
+    end
+
+    Note over Snap,Sim: in steady state, Sim reaches the EDT only through this field
+
+    loop every frame, about 16ms
+        EDT->>Snap: read (volatile)
+        Snap-->>EDT: latest EngineSnapshot
+        EDT->>EDT: repaint BoardView if it changed
+    end
+```
+
+In steady state the two loops are independent. Neither waits for the other, and the only
+things crossing between them are a queue in one direction and a single field in the other.
+That describes the running simulation, not every path through the code:
+
+- **Lifecycle news is pushed, not polled.** State changes and errors go through
+  [`EngineListener`](src/main/java/com/conway/engine/EngineListener.java). Each callback
+  runs on the thread that caused the change — the simulation thread, except for
+  `STOPPED`, which `close()` raises on its caller's thread — so `LifeFrame` wraps every one
+  in `SwingUtilities.invokeLater` before touching a component. Per-generation updates are
+  deliberately *not* sent this way; that would put the simulation rate back in charge of
+  the frame rate.
+- **`sync()`** blocks its caller on a latch until every command queued before it has been
+  processed. The seeder uses it so the first frame of a board already shows the seeded
+  pattern — on the main thread at startup, and on the EDT when the board size changes.
+- **`close()`** joins the simulation thread, and `LifeFrame` calls it on the EDT — when the
+  window closes, and when the board size changes.
+- **`Future.get()`**: the simulation thread does wait every generation — for its own band
+  workers, never for the EDT.
+
+So the EDT genuinely waits for the simulation in exactly two situations: closing the
+window, and changing the board size, which closes the old engine and seeds the new one,
+both synchronously. Both waits are short. The board-size control is disabled while a run
+is in progress, and `close()` returns once the in-flight generation finishes — or, if the
+thread has not stopped within 5 seconds, interrupts it and waits up to 5 more.
+
+### Concepts glossary
+
+| Term | What it means here |
+| --- | --- |
+| Event dispatch thread (EDT) | The one thread Swing allows to touch components. Blocking it freezes the UI |
+| Torn read | Observing a mix of old and new values because the update was not atomic as a whole |
+| Visibility | Whether one thread's write is guaranteed to be seen by another. Not automatic in Java |
+| Safe publication | Writing a reference to a `volatile` field so readers see a fully constructed object |
+| Happens-before | The JMM ordering guarantee that makes one thread's writes visible to another. Supplied here by `volatile` writes and `Future.get()` |
+| Actor | One thread owns mutable state; everyone else sends it messages instead of calling it |
+| Single-writer principle | Only one thread ever mutates a piece of state, so reads need no lock |
+| Virtual thread | A thread, final since JDK 21, that unmounts from its carrier while blocked, so idle ones cost almost nothing |
+| Work stealing | An idle `ForkJoinPool` worker takes tasks queued for a busy one, so uneven work does not leave cores idle |
+| Active region | The bounding box of the live cells, padded by one. Rule evaluation is clipped to it, and it caps the band count |
+
+## Modern Java, where it earns its place
+
+Each feature below is used where it removes code or closes off a class of bug.
+
+| Feature | Since | Where | What it buys |
+| --- | --- | --- | --- |
+| Virtual threads (JEP 444) | 21 | The simulation thread in `SimulationEngine` | A thread that is blocked most of its life costs nothing while idle |
+| Pattern matching for `switch` (JEP 441) | 21 | `SimulationEngine.handle` | Exhaustive dispatch over the sealed `Command` hierarchy |
+| Record patterns (JEP 440) | 21 | `SimulationEngine.releasePendingBarriers` | Matches and destructures `Barrier(CountDownLatch latch)` in one step |
+| Sequenced collections (JEP 431) | 21 | `Pattern.parse` | `getLast()` and `removeLast()` to trim trailing blank rows |
+| `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `LifeRules.bandsFor`, `PartitionPlanner` | One call for every range check on a partition count |
+| `ExecutorService` as `AutoCloseable` | 19 | `SimulationEngine.close`, `GenerationBenchmark` | Shutdown and await in a single call |
+| Records and sealed interfaces | 16, 17 | `Command`, `EngineSnapshot`, `SimulationStats`, `ActiveRegion`, `BoardSizeOption` | Closed vocabularies and immutable value types without boilerplate |
+
+Just as deliberately, some features are **not** used. `StructuredTaskScope` would make
+band-failure cleanup automatic, but it is still a preview API in JDK 21 and the project
+allows no preview features. A `RecursiveTask` decomposition would replace the band model
+that `PartitionEquivalenceTest` pins down, for a few percent. The reasoning for every
+Java ≤21 concurrency tool is in the
+[concurrency features review](docs/concurrency-features-review.md).
 
 ## Testing
 
@@ -102,39 +480,127 @@ not hard-coded index assignments.
 mvn test
 ```
 
-Tests are headless and run on a build agent with no display.
+122 tests in 12 classes, all headless: Surefire sets `java.awt.headless=true`, so the UI
+tests need no display.
 
 The load-bearing test is
-[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/PartitionEquivalenceTest.java):
-partitioning is a work-distribution concern, so the resulting board must not depend on
-how many bands the work was split into. Asserting that directly catches off-by-one
-errors at band boundaries, rows computed twice or skipped, and accidental sharing of
-mutable state between workers.
+[`PartitionEquivalenceTest`](src/test/java/com/conway/engine/rules/PartitionEquivalenceTest.java).
+Partitioning is a work-distribution concern, so the resulting board must not depend on how
+many bands the work was split into. The test runs every band count from 2 to 8 on a
+401×401 random board, and six bands on a non-square board 131 cells wide and 307 tall,
+comparing each generation with the single-threaded result. That catches off-by-one errors at band
+boundaries, rows computed twice or skipped, and accidental sharing of mutable state
+between workers. Each case first asserts that the band count it asked for is the one that
+actually runs, so the test cannot quietly degrade into comparing the inline path with
+itself.
 
-## Benchmark
+| Suite | Pins down |
+| --- | --- |
+| `PartitionEquivalenceTest` | Identical boards at every band count, plus oversized and non-positive requests |
+| `LifeRulesTest` | The rules: still lifes, oscillators, gliders, dead borders, trails, population counts, band-failure reporting |
+| `LifeRulesBandingTest` | The per-generation band cap follows the rows that carry work |
+| `PartitionPlannerTest` | The planner reproduces each board's measured optimum and respects the hardware cap |
+| `SimulationEngineTest` | Queued steps are never dropped; start, pause, clear and edits during a run; held snapshots never change; `close()` is idempotent |
+| `BoardViewTest`, `CellGeometryTest` | Incremental rendering matches a full redraw; letterboxing; pointer-to-cell mapping |
+| `GenerationTest`, `PatternTest`, `PatternLoaderTest`, `BoardSizeOptionTest`, `MainSeedingTest` | The immutable model, `.cells` parsing, board-size presets and the startup seed |
+
+## Performance
+
+### Running the benchmark
 
 ```bash
 java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
 ```
 
-Optional arguments: grid size, generations per measurement.
+Arguments, all optional: grid size (default 201), generations per measurement (default
+300), and the executor — `platform` (the default), `virtual`, or `forkjoin`. The harness
+seeds the same two-gun board the application starts with, and measures partition counts
+1, 2, 4, 8 and so on, doubling up to `min(gridSize, 2 × cores)`, plus that maximum itself.
 
-Measured on a 201×201 board, 10 available cores, best of 5 runs of 300 generations:
+The default executor is **not** the path the application takes. `SimulationEngine` uses a
+`ForkJoinPool`, while the harness defaults to a fixed platform pool, so measure the
+shipping configuration explicitly:
 
-| Partitions | Generations/s | Speedup |
-| --- | --- | --- |
-| 1 | 12,401 | 1.00× |
-| 2 | 15,520 | 1.25× |
-| 4 | 16,238 | 1.31× |
-| 8 | 16,241 | 1.31× |
-| 16 | 15,464 | 1.25× |
-| 20 | 15,442 | 1.25× |
+```bash
+java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 forkjoin
+```
 
-**Parallelism buys about 1.3× on 10 cores, and adding partitions past 8 makes things
-worse.** A single generation on this board takes roughly 80 µs, which is small enough
-that task dispatch and the join barrier dominate. The simulation is already about 200×
-faster than the 60 fps display, so on the default board the threading has no effect on
-what you see; decoupling rendering from the simulation is what matters.
+The three modes exist so that a change of executor is settled by measurement rather than
+by argument — which is how both the move to virtual threads and the later move away from
+them were decided.
+
+> **Read the numbers as indicative, not precise.** The harness warms up, resets to an
+> identical board before each measurement and takes the best of five — enough to show
+> the shape of the curve, but it is not
+> [JMH](https://openjdk.org/projects/code-tools/jmh/). It also measures partition counts
+> in ascending order inside a single JVM, so later rows inherit a warmer JIT; differences
+> between adjacent rows are not reliable. At the default 300 generations, a measurement
+> on the 201 board lasts only about 20 ms; pass a larger count, such as
+> `201 5000 forkjoin`, to lengthen each one. Reach for JMH before drawing any conclusion
+> finer than "does adding threads help at all".
+
+### Parallel speedup on the default board
+
+Measured on a 201×201 board with the shipping `forkjoin` executor — Apple M2 Pro
+(6 performance + 4 efficiency cores), JDK 25, 300 generations per measurement. Two layers
+of "best of" are involved: each invocation of the harness reports its own best of five,
+and each figure below is the best of **four separate invocations**, interleaved with the
+other executor modes.
+
+| Partitions requested | Bands actually run | Generations/s | Speedup |
+| --- | --- | --- | --- |
+| 1 | 1 | 13,131 | 1.00× |
+| 2 | 2 | 18,421 | 1.40× |
+| 4 | 4 | 19,473 | 1.48× |
+
+**Parallelism buys about 1.5× on this board** — roughly half as much again, not a sharp
+optimum: 2 and 4 are close enough that run-to-run spread can reorder them. The machine
+also carried about one core of unrelated background load, so the parallel rows are
+conservative. The table stops at 4 on purpose: on this board every larger request runs
+the same four bands (see [the band cap](#the-per-generation-band-cap)).
+
+A generation takes about 76 µs single-threaded and about 51 µs across four bands. At that
+scale, task dispatch and the join barrier are a large share of the work, which is why the
+curve flattens so early. It also puts the simulation more than 200× ahead of a 60 fps
+display, so on the default board the threading changes nothing you can see; decoupling
+rendering from the simulation is what matters there. Parallelism earns its keep on larger
+boards, [below](#how-the-default-partition-count-is-chosen).
+
+### Choosing the executor
+
+The band workers never block, so the choice of executor is a question about dispatch cost
+and load balancing, not about concurrency. All three modes were run round-robin
+(`platform`, `virtual`, `forkjoin`, repeat) so background load fell evenly on each. Every
+cell is the best across separate invocations of the harness, each reporting its own best
+of five: four invocations of 300 generations for the 201 rows, three of 200 for the 801
+rows.
+
+| Board | Partitions | `platform` | `virtual` | `forkjoin` |
+| --- | --- | --- | --- | --- |
+| 201 | 1 | 12,820 | 13,258 | 13,131 |
+| 201 | 2 | 18,300 | 17,722 | **18,421** |
+| 201 | 4 | 17,268 | 17,422 | **19,473** |
+| 201 | 8 † | 17,380 | 18,620 | 19,254 |
+| 801 | 4 | 3,191 | 3,226 | 3,216 |
+| 801 | 16 | 3,636 | 3,833 | 3,865 |
+
+- **At 201 with the recommended four partitions, work stealing wins.** It is worth about
+  12% over virtual threads on the best figures, and nearer 19% on the means. A band there
+  is only ~10,000 cells, so dispatch overhead is a real fraction of the work, and a
+  `ForkJoinPool`'s per-worker deques beat a single contended queue at about 50–60k
+  dispatches a second — each generation dispatches three of its four bands and computes
+  the fourth inline.
+- **At 801, the executor stops mattering.** A band carries four to sixteen times the cells
+  of a 201 band (at 16 and 4 partitions respectively), so the three executors land within
+  ±4% of their mean — 3,191 to 3,226 at 4 partitions, 3,636 to 3,865 at 16.
+- **The 1-partition row is the control.** It computes inline on the calling thread with
+  no dispatch at all, so all three modes agreeing there says the harness is measuring what
+  it claims to.
+
+† On a 201 board a request for 8 partitions runs the same four bands as a request for 4,
+so this row repeats the 201 | 4 row's work under a different label. It is kept to show
+the run-to-run spread, not as a scaling result, and its winner is deliberately not
+highlighted.
 
 ### How the default partition count is chosen
 
@@ -148,40 +614,127 @@ single partition, same machine and harness:
 | 801 | 1.00× | 1.80× | 3.13× | 3.07× | **3.53×** | 3.52× | 16 |
 | 1601 | 1.00× | 1.86× | 3.39× | 3.95× | 4.92× | **5.10×** | 20 |
 
-At every size the fastest result lands at roughly **fifty rows per band**, and the
-largest board is still improving when it hits the cap. That invariant is the rule
-[`PartitionPlanner`](src/main/java/com/conway/engine/PartitionPlanner.java) implements:
-`clamp(1, rows / 50, maxPartitions)`. It reproduces the measured optimum at all four
-sizes, and it keeps small boards single-threaded instead of paying dispatch cost for
-work that does not exist.
+Two health warnings on this table. It predates the per-generation band cap, so the
+right-hand columns no longer measure distinct configurations (see
+[below](#the-per-generation-band-cap)); these rows have not been re-measured since. And it
+is a different session from the tables above — which report 1.48× where this one reports
+1.15× for the same 201 board at 4 partitions. That ~29% disagreement between runs of the
+same configuration is the harness's real precision, and a good reason to trust only the
+shape of the curve.
+
+The shape is clear, though: at every size the fastest result lands at roughly **fifty rows
+per band**, and the largest board is still improving when it hits the cap. That invariant
+is the rule [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java)
+implements: `clamp(rows / 50, 1, maxPartitions)`. It reproduces the measured optimum at
+all four sizes, and it keeps small boards single-threaded instead of paying dispatch cost
+for work that does not exist.
 
 Two consequences worth knowing:
 
-- Defaulting to `availableProcessors()` would be **slower** than the chosen value on the
-  default board — 10 partitions sits past the peak, on the declining side of the curve.
-- The cap deliberately allows more bands than cores. These are asymmetric cores
-  (6 performance + 4 efficiency); since a generation ends at a barrier, an efficiency
-  core given an equal share delays everyone, and smaller bands let the faster cores
+- **One partition per core was slower.** Defaulting to `availableProcessors()` measured
+  slower than the chosen value when these numbers were recorded — 10 partitions sat past
+  the peak. The per-generation cap has since made the two equivalent on the default board,
+  because both end up at four bands; the planner still earns its place on larger boards,
+  where the request is not capped away.
+- **The cap deliberately allows more bands than cores.** `hardwareCap` is
+  `min(rows, max(2, 2 × cores))`, so a large board may request up to twice the core count.
+  On asymmetric cores (6 performance + 4 efficiency), a generation ends at a barrier, so an
+  efficiency core given an equal share delays everyone; smaller bands let the faster cores
   absorb proportionally more.
 
-The constant was calibrated on one machine and one JDK. Retune it for a deployment that
-cares with `-Dconway.minRowsPerPartition=N`, or bypass it with `-Dconway.partitions=N`.
+The constant was calibrated on one machine and one JDK, and it is less adjustable than the
+two related properties suggest. `-Dconway.minRowsPerPartition=N` and
+`-Dconway.partitions=N` both set only the partition count the application *starts* with:
+a board-size change recomputes it with the built-in 50, and the per-generation cap always
+uses 50. So either property can reduce the number of bands — a larger N, or a smaller
+count — but neither can push past `floor(activeRows / 50)`.
 
-The engine applies the same rule again per generation, against the *active region* rather
-than the whole board, and computes inline when there is too little live area to fill the
-bands. A sparse board is therefore never split: on a 201×201 grid holding a single blinker,
-sixteen bands ran six times slower than computing inline. A consequence for the table above:
-at 201 every partition count from 4 upwards now runs four bands, so differences between those
-rows are measurement noise rather than scaling.
+### The per-generation band cap
 
-Treat these figures as indicative. This is a simple harness, not
-[JMH](https://openjdk.org/projects/code-tools/jmh/) — use JMH before drawing any
-conclusion more precise than "does adding threads help at all".
+The engine applies the same rows-per-band rule again on every generation, against the
+**active region** — a padded bounding box of the live cells, not the full grid — and
+computes inline when there is too little live area to fill the bands. A generation is
+split across at most `floor(activeRows / 50)` bands (`bandsFor` floors a too-small region
+to one band before clamping).
 
-## Security scanning
+What counts is how many rows the live cells span, not how many live cells there are. A
+board whose live cells span fewer than 100 rows once padded is capped to a single band,
+while the default seed, sparse as it is, spans all 201 rows and runs four. The cap exists
+because splitting work that is not there is pure overhead: on a 201×201 grid holding a
+single blinker, sixteen bands ran 5.4 times slower than computing inline.
+
+It also explains the benchmark tables above. A full board caps at four bands at 201,
+eight at 401 and sixteen at 801, so in each row of the partition table every column at or
+beyond that point repeats the same work, and the differences between them are
+measurement artifact rather than scaling. Only the 1601 row still varies across all six
+columns.
+
+## JVM tuning
+
+The full checklist — which flags for which case, which old flags now stop the JVM from
+starting, and the measurements behind every recommendation — is in
+[`docs/jvm-options.md`](docs/jvm-options.md). The short version:
+
+The dominant allocation is two `boolean[]` per generation — about 80 KB on the default
+board, or roughly 1.1–1.6 GB/s at the rates measured above. That is steady, short-lived
+garbage, and G1 absorbs it easily: on the default board, a median pause of 0.51 ms and a
+worst of 7.28 ms, every one inside a 16.7 ms frame.
+
+| Case | Flags | Why |
+| --- | --- | --- |
+| Every run | `-Xms256m -Xmx1g` | Bounds the heap; without `-Xmx` the reference machine allows 8 GB. A gigabyte is ample for the default board. The doc's full baseline adds a heap dump, an error file and a GC log |
+| Interactive use, default board | `-XX:+UseG1GC -XX:MaxGCPauseMillis=20` | States the default collector. The pause goal is inert here: no pause came near 20 ms |
+| Smoothest possible frames | `-XX:+UseZGC`, plus `-XX:+ZGenerational` on JDK 21 | Worst pause 0.02 ms at the same throughput |
+| Large boards | ZGC and a heap sized from the board | G1's pauses grow with the heap; the pixel buffer grows with the board's area |
+| Headless benchmark | `-XX:+UseParallelGC` | The throughput collector; pauses do not matter without a UI |
 
 ```bash
-mvn -Psecurity verify
+java -Xms256m -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
 ```
 
-Opt-in, because the first run downloads the full NVD data set. CI runs it weekly.
+**Size the heap from the board** once it grows past the default. At N×N cells the heap
+holds, in the worst case, `8·N² + 4·N²·s²` bytes: the engine's current and next
+generations (4·N²), up to two more that `BoardView` still references (4·N²), and the pixel
+buffer at 4 bytes per pixel and device scale *s*. At the 10,000×10,000 maximum that is
+about 1.2 GB on a 1× display and 2.4 GB on a 2× one, so `-Xmx1g` is **not** enough there:
+
+```bash
+java -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display; add -XX:+ZGenerational on JDK 21
+java -Xmx4g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 2× (Retina) display
+```
+
+Those sizes are derived from the formula plus room for ZGC to allocate while it collects;
+the GUI itself was not run at that size.
+
+**Virtual-thread pinning.** JFR recordings on JDK 21, with `jdk.VirtualThreadPinned`'s
+threshold lowered to 0 ms, captured zero pins — first when the band workers were still
+virtual threads alongside the actor, and again with the current `ForkJoinPool` workers.
+JDK 25 captured **one**: a single 12.8 µs pin inside the JDK's own class loading (a
+contended `ZipFile` monitor while the simulation thread lazily loaded a class), not in the
+engine's `take()` or `Future.get()`. Only JDK 25 could see it: its version of the event
+also records blocking operations such as contended monitor enters — its schema adds a
+*Blocking Operation* field that JDK 21's lacks — so JDK 21's zero is narrower than it
+looks. Background in [`docs/java21-migration.md`](docs/java21-migration.md).
+
+## Further reading
+
+The engineering behind the design decisions above is written up in `docs/`:
+
+| Document | What it covers |
+| --- | --- |
+| [Java 21 migration](docs/java21-migration.md) | What changed moving 17 → 21 and why: virtual threads, the single volatile snapshot, JMM and GC cleanup |
+| [Concurrency features review](docs/concurrency-features-review.md) | Every Java ≤21 concurrency tool weighed against this codebase, including what was rejected and the reason |
+| [Profiling findings](docs/profiling-findings.md) | Analysis of a VisualVM snapshot and thread dump, with the findings a later clean JFR profile overturned marked as such |
+| [Profiling fixes](docs/profiling-issues-fixing-progress.md) | What was done about each finding — incremental rendering, band capping, and the ones deliberately not fixed |
+| [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
+| [Migration plan](docs/java21-migration-plan.md) | The original tracking document for the migration |
+
+The same application also lives on sibling branches, which serve as a testbed for each
+new JDK and for ports to other languages:
+
+| Branch | What it holds |
+| --- | --- |
+| `java25`, `java26`, `java27` | The application carried forward to each JDK release |
+| `graalvm-jdk-25` | A GraalVM JDK 25 build, including a native image |
+| `kotlin` | A Kotlin port, built with Gradle |
+| `rust` | A Rust port, built with Cargo |

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import com.conway.engine.support.SimulationStats;
 import com.conway.model.Generation;
 import com.conway.model.Pattern;
 
@@ -302,16 +303,15 @@ class SimulationEngineTest {
     }
 
     @Test
-    @DisplayName("Partition counts are honoured with the virtual-thread executor")
+    @DisplayName("Partition counts are honoured and reported by the engine")
     @Timeout(30)
-    void partitionCountsAreHonouredWithVirtualThreads() throws Exception {
-        // The band workers now run on a virtual-thread-per-task executor, which has no
-        // pool to size: a virtual thread is created per band and retired when the band
-        // finishes. The previous pool-sizing tests pinned ThreadPoolExecutor internals
-        // (core size, keepalive, thread count) that no longer exist. What still matters
-        // is that the requested partition count is actually used and produces the same
-        // board, which PartitionEquivalenceTest pins down; here we just confirm the
-        // engine runs correctly across a range of counts on a banded board.
+    void partitionCountsAreHonoured() throws Exception {
+        // The band workers run on a dedicated ForkJoinPool whose parallelism is fixed at
+        // construction, so there is no pool-sizing apparatus to test and nothing to resize
+        // when the partition control moves. What still matters is that the requested
+        // partition count is actually used and produces the same board, which
+        // PartitionEquivalenceTest pins down; here we just confirm the engine runs
+        // correctly across a range of counts on a banded board.
         try (SimulationEngine large = new SimulationEngine(BANDED_SIZE, BANDED_SIZE, 16)) {
             spanningBlocks(large, BANDED_SIZE);
 

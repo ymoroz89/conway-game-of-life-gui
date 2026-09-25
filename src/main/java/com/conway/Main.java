@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import com.conway.config.LifeConfig;
 import com.conway.engine.SimulationEngine;
-import com.conway.engine.SimulationSeeder;
+import com.conway.engine.support.SimulationSeeder;
 import com.conway.ui.LifeGuiLauncher;
 
 /** Application entry point: builds the engine, seeds the board and shows the window. */

@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 /** Thrown when a generation cannot be computed. */
 public class SimulationException extends RuntimeException {

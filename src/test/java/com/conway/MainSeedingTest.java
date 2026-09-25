@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import com.conway.engine.SimulationEngine;
-import com.conway.engine.SimulationSeeder;
+import com.conway.engine.support.SimulationSeeder;
 import com.conway.model.Generation;
 
 /**

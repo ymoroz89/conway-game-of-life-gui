@@ -14,7 +14,7 @@ Companion documents: [`java21-migration.md`](java21-migration.md) (what changed 
 
 | Feature | JDK | Where | Why |
 | --- | --- | --- | --- |
-| `Executors.newVirtualThreadPerTaskExecutor` | 21 | `SimulationEngine` band workers | Measured at parity-or-better vs a platform pool, and it deleted the whole pool-sizing apparatus |
+| `ForkJoinPool` (dedicated, parallelism = cores) | 7 | `SimulationEngine` band workers | Superseded the virtual-thread executor in 2026-09. Work stealing suits uneven bands and asymmetric cores, and per-worker deques cost less than one contended queue at ~50k dispatches/s. Measured 12–19% faster at 201/4 partitions, parity at 801. Parallelism is fixed at construction, so the old pool-sizing apparatus does **not** return |
 | `Thread.ofVirtual()` | 21 | Simulation actor thread (`SimulationEngine.runLoop`) | The actor's life is `take()`/`get()`/park; a virtual thread unmounts and costs nothing idle |
 | `BlockingQueue<Command>` + actor loop | — | `SimulationEngine` | Single-writer actor; steps are queued, never dropped; pausing blocks on `take()` |
 | One `volatile EngineSnapshot` publication point | — | `SimulationEngine.publish()` | Generation + stats observed together; no lock on the render path |
@@ -28,7 +28,8 @@ Companion documents: [`java21-migration.md`](java21-migration.md) (what changed 
 
 | Feature | JDK | Disposition | Rationale |
 | --- | --- | --- | --- |
-| `ForkJoinPool` / work stealing | 7 | ❌ Rejected | Largest rewrite; replaces the band model `PartitionEquivalenceTest` pins, for a few percent. See `profiling-issues-fixing-progress.md`. |
+| `Executors.newVirtualThreadPerTaskExecutor` | 21 | ⬅️ Superseded | Used for band workers from the Java 21 migration until 2026-09, on the correct reasoning that it matched a platform pool and deleted the pool-sizing apparatus. Replaced by a dedicated `ForkJoinPool`, which keeps that simplicity *and* is measurably faster. The band work never blocks, which is the one thing virtual threads exist to make cheap — so they were always a neutral choice here, not a beneficial one |
+| `ForkJoinPool` as a *recursive decomposition* (`RecursiveTask`) | 7 | ❌ Rejected | This is the proposal the earlier rejection was really about: it replaces the band model `PartitionEquivalenceTest` pins, for a few percent. Using `ForkJoinPool` merely as the executor behind the existing band model is a one-line change and is now in use above — the two were conflated |
 | `Phaser` with persistent band loops | 7 | ❌ Rejected | Workers become engine-owned, `setPartitions` becomes a reconfiguration, spin phases burn CPU when idle; a few percent at best. Same source. |
 | `CompletableFuture` | 8 | ❌ N/A | Band work is synchronous fork-join; there is no async composition to chain |
 | `ReentrantLock` / `StampedLock` / RW locks | 5/8 | ❌ N/A | The design is lock-free by construction (single writer + immutable snapshot); a monitor would only add a path that can leak |

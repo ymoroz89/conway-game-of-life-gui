@@ -1,4 +1,4 @@
-package com.conway.engine;
+package com.conway.engine.rules;
 
 import java.util.ArrayList;
 import java.util.List;

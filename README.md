@@ -729,12 +729,12 @@ The engineering behind the design decisions above is written up in `docs/`:
 | [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
 | [Migration plan](docs/java21-migration-plan.md) | The original tracking document for the migration |
 
-The same application also lives on sibling branches, which serve as a testbed for each
-new JDK and for ports to other languages:
+The same application also lives on sibling branches, which serve as a testbed for newer
+JDK releases and for ports to other languages:
 
 | Branch | What it holds |
 | --- | --- |
-| `java25`, `java26`, `java27` | The application carried forward to each JDK release |
-| `graalvm-jdk-25` | A GraalVM JDK 25 build, including a native image |
+| `java25` | The application carried forward to JDK 25 |
+| `java27` | The application carried forward to JDK 27 |
 | `kotlin` | A Kotlin port, built with Gradle |
 | `rust` | A Rust port, built with Cargo |

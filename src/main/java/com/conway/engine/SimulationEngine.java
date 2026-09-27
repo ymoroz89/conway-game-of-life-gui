@@ -23,6 +23,13 @@ import com.conway.model.Pattern;
 /**
  * Owns the board and runs the simulation.
  *
+ * <p><strong>Single responsibility.</strong> This class is the single-writer actor for
+ * the simulation: it owns the board and serializes all mutations on its dedicated
+ * simulation thread. Collaboration with other concerns (rules execution, listeners,
+ * throughput accounting) is delegated to collaborator types. The recent refactor extracted
+ * per-command handlers to keep each action small and intent-revealing while preserving the
+ * single-writer invariant.
+ *
  * <h2>Threading model</h2>
  * The engine is a single-writer actor. Exactly one thread &mdash; the simulation
  * thread created in the constructor &mdash; ever mutates simulation state. Every
@@ -323,57 +330,121 @@ public final class SimulationEngine implements AutoCloseable {
         }
     }
 
+    /**
+     * Routes a single {@link Command} to a dedicated handler.
+     * The method runs on the simulation thread and must not block on external work.
+     */
     private void handle(Command command) throws InterruptedException {
         switch (command) {
-            case Command.Signal.START -> {
-                if (!running) {
-                    running = true;
-                    clock.startRun();
-                    LOG.info("Run started with {} partition(s)", partitions);
-                    setState(State.RUNNING);
-                }
-            }
-            case Command.Signal.PAUSE -> {
-                if (running) {
-                    running = false;
-                    logRunSummary();
-                }
-                setState(State.PAUSED);
-            }
-            case Command.Signal.STEP -> advance(false);
-            case Command.Signal.CLEAR -> {
-                running = false;
-                clock.reset();
-                board = Generation.empty(board.width(), board.height());
-                publish(board, new SimulationStats(0L, 0L, 0L, partitions));
-                LOG.info("Board cleared");
-                setState(State.PAUSED);
-            }
-            case Command.ToggleCell toggle -> applyToggle(toggle);
-            case Command.PlacePattern place -> {
-                board = board.withPattern(place.pattern(), place.row(), place.col());
-                publish(board, snapshot.stats());
-                LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
-            }
-            case Command.SetPartitions setPartitions -> {
-                if (partitions != setPartitions.count()) {
-                    partitions = setPartitions.count();
-                    LOG.info("Partition count changed to {}", partitions);
-                    publish(board, new SimulationStats(
-                            board.number(), clock.generations(), clock.elapsedNanos(), partitions));
-                }
-            }
-            case Command.Barrier barrier -> barrier.latch().countDown();
-            case Command.Signal.SHUTDOWN -> {
-                if (running) {
-                    running = false;
-                    logRunSummary();
-                }
-                shutdownRequested = true;
-            }
+            case Command.Signal.START -> handleStart();
+            case Command.Signal.PAUSE -> handlePause();
+            case Command.Signal.STEP -> handleStep();
+            case Command.Signal.CLEAR -> handleClear();
+            case Command.ToggleCell toggle -> handleToggleCell(toggle);
+            case Command.PlacePattern place -> handlePlacePattern(place);
+            case Command.SetPartitions set -> handleSetPartitions(set);
+            case Command.Barrier barrier -> handleBarrier(barrier);
+            case Command.Signal.SHUTDOWN -> handleShutdown();
         }
     }
 
+    // --- Per-command handlers (small, intent-revealing, single responsibility) ---
+
+    /**
+     * Starts continuous advancement of generations if not already running.
+     * Updates run clock and notifies listeners of {@link State#RUNNING}.
+     */
+    private void handleStart() {
+        if (!running) {
+            running = true;
+            clock.startRun();
+            LOG.info("Run started with {} partition(s)", partitions);
+            setState(State.RUNNING);
+        }
+    }
+
+    /**
+     * Pauses the simulation if it is running and logs a run summary.
+     * Always publishes {@link State#PAUSED}.
+     */
+    private void handlePause() {
+        if (running) {
+            running = false;
+            logRunSummary();
+        }
+        setState(State.PAUSED);
+    }
+
+    /**
+     * Advances the simulation by exactly one generation (not counted in throughput).
+     */
+    private void handleStep() throws InterruptedException {
+        advance(false);
+    }
+
+    /**
+     * Clears the board, resets throughput counters, and publishes an empty snapshot.
+     * Transitions the engine to {@link State#PAUSED}.
+     */
+    private void handleClear() {
+        running = false;
+        clock.reset();
+        board = Generation.empty(board.width(), board.height());
+        publish(board, new SimulationStats(0L, 0L, 0L, partitions));
+        LOG.info("Board cleared");
+        setState(State.PAUSED);
+    }
+
+    /**
+     * Applies a single-cell toggle to the current board and republishes the snapshot.
+     */
+    private void handleToggleCell(Command.ToggleCell toggle) {
+        applyToggle(toggle);
+    }
+
+    /**
+     * Places a pattern onto the board (clipped to bounds) and republishes the snapshot.
+     */
+    private void handlePlacePattern(Command.PlacePattern place) {
+        board = board.withPattern(place.pattern(), place.row(), place.col());
+        publish(board, snapshot.stats());
+        LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
+    }
+
+    /**
+     * Updates the partitions used for banded computation and republishes stats if changed.
+     */
+    private void handleSetPartitions(Command.SetPartitions setPartitions) {
+        if (partitions != setPartitions.count()) {
+            partitions = setPartitions.count();
+            LOG.info("Partition count changed to {}", partitions);
+            publish(board, new SimulationStats(
+                    board.number(), clock.generations(), clock.elapsedNanos(), partitions));
+        }
+    }
+
+    /**
+     * Releases a single synchronization barrier used by tests and deterministic startup.
+     */
+    private void handleBarrier(Command.Barrier barrier) {
+        barrier.latch().countDown();
+    }
+
+    /**
+     * Stops continuous advancement, logs a summary, and requests shutdown of the run loop.
+     */
+    private void handleShutdown() {
+        if (running) {
+            running = false;
+            logRunSummary();
+        }
+        shutdownRequested = true;
+    }
+
+    /**
+     * Toggles the liveness of a single cell if coordinates are on-board and republishes
+     * the board with unchanged stats (editing does not affect throughput counters).
+     */
     private void applyToggle(Command.ToggleCell toggle) {
         Generation current = board;
         if (toggle.row() < 0 || toggle.row() >= current.height()
@@ -411,11 +482,17 @@ public final class SimulationEngine implements AutoCloseable {
         }
     }
 
-    /** Single write point for the volatile snapshot: generation and stats change together. */
+    /**
+     * Single write point for the volatile snapshot: generation and stats change together,
+     * ensuring readers always observe a consistent pair.
+     */
     private void publish(Generation generation, SimulationStats stats) {
         snapshot = new EngineSnapshot(generation, stats);
     }
 
+    /**
+     * Logs a concise throughput summary for the last run period.
+     */
     private void logRunSummary() {
         SimulationStats snapshot = this.snapshot.stats();
         LOG.info("Run finished: {} generations in {} s using {} partition(s), {} generations/s",
@@ -425,6 +502,10 @@ public final class SimulationEngine implements AutoCloseable {
                 String.format("%.1f", snapshot.generationsPerSecond()));
     }
 
+    /**
+     * Updates the externally visible lifecycle {@link State} and notifies listeners
+     * if it changed.
+     */
     private void setState(State newState) {
         if (state == newState) {
             return;
@@ -433,7 +514,10 @@ public final class SimulationEngine implements AutoCloseable {
         listeners.stateChanged(newState);
     }
 
-    /** Prevents callers blocked in {@link #sync} from waiting forever after shutdown. */
+    /**
+     * Prevents callers blocked in {@link #sync(long, TimeUnit)} from waiting forever after
+     * shutdown by draining the command queue and releasing any lingering barriers.
+     */
     private void releasePendingBarriers() {
         List<Command> pending = new ArrayList<>();
         commands.drainTo(pending);

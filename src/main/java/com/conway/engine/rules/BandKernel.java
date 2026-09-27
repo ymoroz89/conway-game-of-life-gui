@@ -17,6 +17,9 @@ import com.conway.model.Generation;
  *
  * <p>Pure CPU: it never blocks, which is why the band workers are a {@code ForkJoinPool}
  * rather than virtual threads. Boundaries are dead: the grid does not wrap.
+ *
+ * <p>Every loop below hoists the band's arrays out of the fields and into locals, so the
+ * per-cell work reads registers rather than reloading {@code this} for each cell.
  */
 final class BandKernel {
 
@@ -44,122 +47,159 @@ final class BandKernel {
         this.active = active;
     }
 
-    /** Computes rows {@code [fromRow, toRow)} of the next generation. */
+    /**
+     * Computes rows {@code [fromRow, toRow)} of the next generation.
+     *
+     * <p>Rows come in two shapes and the branch below separates them. A row that is not the
+     * first or last, on a board wide enough for a cell to have neighbors beside it, has all
+     * eight neighbors of every cell on the board, so the run between the first and last
+     * column of such a row needs no bounds checks at all; that is the path that carries the
+     * run time. Every other cell -- the first and last column of such a row, and every cell
+     * of a row along the top or bottom edge -- goes through {@link #ruleAt}, which checks
+     * each neighbor.
+     *
+     * <p>Rule evaluation is clipped to the active region: cells the region does not reach are
+     * not written at all, since a fresh {@code dst} is already dead there. {@code live}
+     * collects the bounding box of the cells this band turns on, which {@link LifeRules}
+     * merges with the boxes of the other bands to form the next generation's active region.
+     */
     BandResult computeBand(int fromRow, int toRow) {
         // Locals rather than fields, so the loops below read registers, not the heap.
         final boolean[] src = this.src;
-        final boolean[] srcEver = this.srcEver;
         final boolean[] dst = this.dst;
-        final boolean[] dstEver = this.dstEver;
         final int width = this.width;
         final int height = this.height;
         final ActiveRegion activeLimit = this.active;
 
-        int minRow = Integer.MAX_VALUE, maxRow = -1, minCol = Integer.MAX_VALUE, maxCol = -1;
+        LiveBounds live = new LiveBounds();
+        RowBounds rowBounds = new RowBounds();
 
-        int rowStart = Math.max(fromRow, activeLimit.minRow());
-        int rowEnd = Math.min(toRow, activeLimit.maxRow() + 1);
+        int firstRow = Math.max(fromRow, activeLimit.minRow());
+        int lastRow = Math.min(toRow, activeLimit.maxRow() + 1);
 
-        for (int row = rowStart; row < rowEnd; row++) {
+        for (int row = firstRow; row < lastRow; row++) {
             int rowBase = row * width;
             int colStart = activeLimit.minCol();
             int colEnd = activeLimit.maxCol() + 1;
+            rowBounds.reset();
 
-            if (row > 0 && row < height - 1 && width > 2) {
-                int up = rowBase - width;
-                int down = rowBase + width;
-
-                if (colStart == 0) {
-                    dst[rowBase] = ruleAt(src, width, height, row, 0);
-                    if (dst[rowBase]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, 0);
-                        maxCol = Math.max(maxCol, 0);
-                    }
-                    colStart = 1;
-                }
-
-                int effectiveColEnd = Math.min(colEnd, width - 1);
-
-                for (int col = colStart; col < effectiveColEnd; col++) {
-                    int i = rowBase + col;
-                    int neighbours =
-                            (src[up + col - 1] ? 1 : 0)
-                                    + (src[up + col] ? 1 : 0)
-                                    + (src[up + col + 1] ? 1 : 0)
-                                    + (src[i - 1] ? 1 : 0)
-                                    + (src[i + 1] ? 1 : 0)
-                                    + (src[down + col - 1] ? 1 : 0)
-                                    + (src[down + col] ? 1 : 0)
-                                    + (src[down + col + 1] ? 1 : 0);
-                    dst[i] = src[i] ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, col);
-                        maxCol = Math.max(maxCol, col);
-                    }
-                }
-
-                if (colEnd == width) {
-                    int i = rowBase + width - 1;
-                    dst[i] = ruleAt(src, width, height, row, width - 1);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, width - 1);
-                        maxCol = Math.max(maxCol, width - 1);
-                    }
-                }
+            if (isInteriorRow(row, width, height)) {
+                processInteriorRow(src, dst, width, height, row, rowBase, colStart, colEnd, rowBounds);
             } else {
-                for (int col = colStart; col < colEnd; col++) {
-                    int i = rowBase + col;
-                    dst[i] = ruleAt(src, width, height, row, col);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, col);
-                        maxCol = Math.max(maxCol, col);
-                    }
-                }
+                // A cell on the border of the board, or on a board too narrow to have
+                // interior cells: each one is evaluated with its neighbors checked.
+                processBorderRow(src, dst, width, height, row, rowBase, colStart, colEnd, rowBounds);
             }
+
+            live.includeRow(row, rowBounds.minCol, rowBounds.maxCol);
         }
 
-        // Carry the previous generation's ever-alive flags forward and mark the cells that
-        // newly qualify, fused into one pass per row so the row is still in cache for the
-        // second half.
-        //
-        // The OR sweeps the full width even though dst can only be true inside the active
-        // region, so on a sparse board most of it is provably redundant. Narrowing it was
-        // tried three ways -- bounding the columns, splitting copy and OR into separate
-        // passes, and folding the marks into the rule loop above -- and every one of them
-        // cost 2-5% on a dense board while only speeding up boards that were already taking
-        // under 50us a generation. The redundancy is deliberate: it buys sequential access
-        // over a contiguous row, which is worth more than the work it skips. See
-        // docs/profiling-issues-fixing-progress.md.
-        //
-        // The population count is folded into this same pass: it already visits every cell
-        // of the band, so counting dst here costs nothing extra and spares the status bar
-        // an O(board) scan per frame.
+        int population = carryEverAliveAndCountPopulation(fromRow, toRow);
+        return new BandResult(live.toRegion(), population);
+    }
+
+    /** Processes an interior row where the middle run needs no bounds checks. */
+    private static void processInteriorRow(boolean[] src,
+                                           boolean[] dst,
+                                           int width,
+                                           int height,
+                                           int row,
+                                           int rowBase,
+                                           int colStart,
+                                           int colEnd,
+                                           RowBounds rowBounds) {
+        int rowAboveBase = rowBase - width;
+        int rowBelowBase = rowBase + width;
+
+        handleLeftEdgeIfReached(src, dst, width, height, row, rowBase, colStart, rowBounds);
+        processUncheckedMiddleRun(src, dst, rowBase, rowAboveBase, rowBelowBase, width, colStart, colEnd, rowBounds);
+        handleRightEdgeIfReached(src, dst, width, height, row, rowBase, colEnd, rowBounds);
+    }
+
+    /** Processes a border or narrow row, using fully checked rule evaluation. */
+    private static void processBorderRow(boolean[] src,
+                                         boolean[] dst,
+                                         int width,
+                                         int height,
+                                         int row,
+                                         int rowBase,
+                                         int colStart,
+                                         int colEnd,
+                                         RowBounds rowBounds) {
+        for (int col = colStart; col < colEnd; col++) {
+            int i = rowBase + col;
+            dst[i] = ruleAt(src, width, height, row, col);
+            rowBounds.includeIfAlive(dst[i], col);
+        }
+    }
+
+    /**
+     * Copies ever-alive flags for one row, folds in the freshly alive cells of this
+     * generation, and returns the number of live cells in the row.
+     */
+    private int processEverRow(int row) {
+        final boolean[] srcEver = this.srcEver;
+        final boolean[] dst = this.dst;
+        final boolean[] dstEver = this.dstEver;
+        final int width = this.width;
+
+        int rowBase = row * width;
+        System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);
+
+        int pop = 0;
+        for (int col = 0; col < width; col++) {
+            int i = rowBase + col;
+            boolean alive = dst[i];
+            dstEver[i] |= alive;
+            if (alive) pop++;
+        }
+        return pop;
+    }
+
+    /**
+     * True when every cell of {@code row} has all eight neighbors on the board: the row is
+     * not the first or last, and the board is wide enough for a cell to have neighbors
+     * beside it. No row of a narrower board qualifies, whatever its position.
+     */
+    private static boolean isInteriorRow(int row, int width, int height) {
+        return row > 0 && row < height - 1 && width > 2;
+    }
+
+    /**
+     * Carries the ever-alive flags of rows {@code [fromRow, toRow)} forward into
+     * {@code dstEver}, marks the cells this generation turned alive, and returns the number
+     * of live cells in the band.
+     *
+     * <p>The copy and the marking are fused into one pass per row so the row is still in
+     * cache for the second half. The OR sweeps the full width even though {@code dst} can
+     * only be true inside the active region, so on a sparse board most of it is provably
+     * redundant. Narrowing it was tried three ways -- bounding the columns, splitting copy
+     * and OR into separate passes, and folding the marks into the rule loops above -- and
+     * every one of them cost 2-5% on a dense board while only speeding up boards that were
+     * already taking under 50us a generation. The redundancy is deliberate: it buys
+     * sequential access over a contiguous row, which is worth more than the work it skips.
+     * See docs/profiling-issues-fixing-progress.md.
+     *
+     * <p>The population count is folded into this same pass: it already visits every cell of
+     * the band, so counting {@code dst} here costs nothing extra and spares the status bar
+     * an O(board) scan per frame.
+     */
+    private int carryEverAliveAndCountPopulation(int fromRow, int toRow) {
         int population = 0;
         for (int row = fromRow; row < toRow; row++) {
-            int rowBase = row * width;
-            System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);
-            for (int col = 0; col < width; col++) {
-                int i = rowBase + col;
-                dstEver[i] |= dst[i];
-                if (dst[i]) {
-                    population++;
-                }
-            }
+            population += processEverRow(row);
         }
-
-        return new BandResult(new ActiveRegion(minRow, maxRow, minCol, maxCol), population);
+        return population;
     }
 
     /** Bounds-checked rule evaluation, used for cells on the border of the board. */
     private static boolean ruleAt(boolean[] src, int width, int height, int row, int col) {
+        int neighbours = countNeighboursChecked(src, width, height, row, col);
+        return survives(src[row * width + col], neighbours);
+    }
+
+    /** Counts neighbors with full bounds checks (for border/narrow rows). */
+    private static int countNeighboursChecked(boolean[] src, int width, int height, int row, int col) {
         int neighbours = 0;
         int rowStart = Math.max(0, row - 1);
         int rowEnd = Math.min(height - 1, row + 1);
@@ -174,8 +214,125 @@ final class BandKernel {
                 }
             }
         }
-        boolean alive = src[row * width + col];
+        return neighbours;
+    }
+
+    private static void handleLeftEdgeIfReached(boolean[] src,
+                                                boolean[] dst,
+                                                int width,
+                                                int height,
+                                                int row,
+                                                int rowBase,
+                                                int colStart,
+                                                RowBounds rowBounds) {
+        if (colStart == 0) {
+            dst[rowBase] = ruleAt(src, width, height, row, 0);
+            rowBounds.includeIfAlive(dst[rowBase], 0);
+        }
+    }
+
+    private static void handleRightEdgeIfReached(boolean[] src,
+                                                 boolean[] dst,
+                                                 int width,
+                                                 int height,
+                                                 int row,
+                                                 int rowBase,
+                                                 int colEnd,
+                                                 RowBounds rowBounds) {
+        if (colEnd == width) {
+            int col = width - 1;
+            int i = rowBase + col;
+            dst[i] = ruleAt(src, width, height, row, col);
+            rowBounds.includeIfAlive(dst[i], col);
+        }
+    }
+
+    private static void processUncheckedMiddleRun(boolean[] src,
+                                                  boolean[] dst,
+                                                  int rowBase,
+                                                  int rowAboveBase,
+                                                  int rowBelowBase,
+                                                  int width,
+                                                  int colStart,
+                                                  int colEnd,
+                                                  RowBounds rowBounds) {
+        int uncheckedStart = Math.max(colStart, 1);
+        int uncheckedEnd = Math.min(colEnd, width - 1);
+        for (int col = uncheckedStart; col < uncheckedEnd; col++) {
+            int cellIndex = rowBase + col;
+            int neighborCount =
+                    (src[rowAboveBase + col - 1] ? 1 : 0)
+                            + (src[rowAboveBase + col] ? 1 : 0)
+                            + (src[rowAboveBase + col + 1] ? 1 : 0)
+                            + (src[cellIndex - 1] ? 1 : 0)
+                            + (src[cellIndex + 1] ? 1 : 0)
+                            + (src[rowBelowBase + col - 1] ? 1 : 0)
+                            + (src[rowBelowBase + col] ? 1 : 0)
+                            + (src[rowBelowBase + col + 1] ? 1 : 0);
+            dst[cellIndex] = survives(src[cellIndex], neighborCount);
+            rowBounds.includeIfAlive(dst[cellIndex], col);
+        }
+    }
+
+    /**
+     * The rule itself: a live cell with two or three live neighbors survives, and a dead
+     * cell with exactly three comes alive.
+     */
+    private static boolean survives(boolean alive, int neighbours) {
         return alive ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
+    }
+
+    /**
+     * The bounding box of the live cells a band turns on, accumulated as the band runs.
+     *
+     * <p>Rows are offered in order, but that is not relied on: any cell may be offered at
+     * any time, and a row that carries no live cells changes nothing.
+     */
+    private static final class LiveBounds {
+
+        private int minRow = Integer.MAX_VALUE;
+        private int maxRow = -1;
+        private int minCol = Integer.MAX_VALUE;
+        private int maxCol = -1;
+
+        /**
+         * Offers the live cells of one row, whose columns span {@code [rowMinCol, rowMaxCol]}.
+         * An empty span means the row had no live cells and is ignored.
+         */
+        void includeRow(int row, int rowMinCol, int rowMaxCol) {
+            if (rowMinCol > rowMaxCol) {
+                return;
+            }
+            minRow = Math.min(minRow, row);
+            maxRow = Math.max(maxRow, row);
+            minCol = Math.min(minCol, rowMinCol);
+            maxCol = Math.max(maxCol, rowMaxCol);
+        }
+
+        /** The bounding box, empty when no row offered a live cell. */
+        ActiveRegion toRegion() {
+            return new ActiveRegion(minRow, maxRow, minCol, maxCol);
+        }
+    }
+
+    /**
+     * Mutable row bounds collected while evaluating one row. Reused per-row to avoid
+     * allocations inside the hot loop.
+     */
+    private static final class RowBounds {
+        int minCol = Integer.MAX_VALUE;
+        int maxCol = -1;
+
+        void reset() {
+            minCol = Integer.MAX_VALUE;
+            maxCol = -1;
+        }
+
+        void includeIfAlive(boolean alive, int col) {
+            if (!alive) return;
+            minCol = Math.min(minCol, col);
+            maxCol = Math.max(maxCol, col);
+        }
     }
 
     /**

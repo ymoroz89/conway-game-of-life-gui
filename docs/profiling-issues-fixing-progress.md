@@ -483,7 +483,7 @@ done by narrowing bounds, splitting passes, or moving the marks into the rule lo
 additionally moved a full-board copy off the parallel bands onto the serial prologue, which is
 straightforward Amdahl.
 
-A comment in `computeBand` records this so the next reader does not re-derive it — the loop
+A comment in `BandKernel` records this so the next reader does not re-derive it — the loop
 looks obviously improvable and is not.
 
 ### N2 — `ActiveRegion` per band per generation ⬜ Won't fix

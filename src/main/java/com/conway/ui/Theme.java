@@ -163,7 +163,7 @@ public final class Theme {
 
     /**
      * Restyles a spinner's editor. The arrow buttons come from the look and feel; the
-     * text field is ours, so it gets the theme's surface, a centred value and a caret
+     * text field is ours, so it gets the theme's surface, a centered value and a caret
      * that is visible against a dark background.
      */
     public static void styleSpinner(JSpinner spinner) {

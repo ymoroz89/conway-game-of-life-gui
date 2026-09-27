@@ -47,8 +47,8 @@ class PartitionPlannerTest {
     }
 
     @Test
-    @DisplayName("The rows-per-band threshold is honoured when supplied explicitly")
-    void honoursExplicitThreshold() {
+    @DisplayName("The rows-per-band threshold is honored when supplied explicitly")
+    void honorsExplicitThreshold() {
         assertEquals(20, PartitionPlanner.recommend(201, CAP, 10));
         assertEquals(2, PartitionPlanner.recommend(201, CAP, 100));
         assertEquals(1, PartitionPlanner.recommend(201, CAP, 500));
@@ -94,5 +94,6 @@ class PartitionPlannerTest {
         assertTrue(cap >= 2, "cap should permit at least two bands: " + cap);
         assertTrue(cap <= 201, "cap should never exceed the row count: " + cap);
         assertEquals(4, PartitionPlanner.hardwareCap(4), "a tiny board caps at its own row count");
+        assertEquals(1, PartitionPlanner.hardwareCap(1), "a one-row board caps at one, below the floor of two");
     }
 }

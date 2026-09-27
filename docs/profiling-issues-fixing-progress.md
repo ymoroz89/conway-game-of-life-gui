@@ -1,7 +1,23 @@
 # Profiling issues — fixing progress
 
 Tracks remediation of the findings in [profiling-findings.md](profiling-findings.md).
-Updated as each fix lands.
+Each entry records the code as that fix landed, between 2026-07-31 and 2026-08-06.
+
+> **Later changes that supersede parts of this log:**
+>
+> - **P2-5 was done after all** (2026-08-06): the population is counted in the band pass that
+>   already visits every cell, and `Generation.adopt` carries the total, so `population()` is
+>   O(1). The status row and the [N3 / P2-5](#n3--p2-5--generationpopulation-per-frame--done-later)
+>   section are updated.
+> - **P1-3's mechanism no longer exists.** The Java 21 migration (2026-08-06) replaced the
+>   `ThreadPoolExecutor` with virtual-thread band workers, deleting `setCorePoolSize`, the
+>   keepalive and the three pool-sizing tests named below. On 2026-09-24 the band workers
+>   became a `ForkJoinPool` with parallelism `min(maxPartitions, cores)`.
+> - **Code moved** (2026-09-24 onward). `LifeRules` is now in `com.conway.engine.rules`;
+>   `computeBand` and `ruleAt` live in `BandKernel`; `bandsFor` is `PartitionPlanner.bandsFor`;
+>   `LifeRulesBandingTest` is `BandCapTest`. The empty-region early return in `LifeRules.next`
+>   is gone: an empty board takes the ordinary single-band path, which carries the ever-alive
+>   flags forward.
 
 ## Status
 
@@ -9,14 +25,14 @@ Updated as each fix lands.
 | --- | --- | --- | --- |
 | P1-1 | Renderer redraws the whole board every frame | 🔴 P1 | ✅ **Done** |
 | P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ◐ **Partly** — see notes |
-| P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** |
+| P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** — since superseded by a `ForkJoinPool` |
 | P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ✅ **Done** |
 | P2-4b | Second validation pass: wall-clock, real application | 🟡 P2 | ✅ **Done** |
-| P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ⬜ Won't fix — 0.1% of CPU |
+| P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ✅ **Done later** — counted in the band pass |
 | N1 | Two `boolean[]` allocated per generation | 🟡 P2 | ⬜ Won't fix — measured, see notes |
 | — | **Bug:** ever-alive flags erased when the board dies out | 🔴 | ✅ **Fixed** |
 | N2 | `ActiveRegion` per band per generation | 🟢 P3 | ⬜ Won't fix — negligible by bytes |
-| N5 | Worker utilisation — dispatch overhead | 🟡 P2 | ◐ **Partly** — caller now computes a band, +4.5% |
+| N5 | Worker utilization — dispatch overhead | 🟡 P2 | ◐ **Partly** — caller now computes a band, +4.5% |
 | P2-6 | Machine has substantial headroom (context only) | 🟡 P2 | ℹ️ No action |
 | P3-7..10 | Informational | 🟢 P3 | ℹ️ No action |
 | H-11..16 | Confirmed healthy | ✅ | ℹ️ No action |
@@ -39,7 +55,7 @@ first:
 1. **Nothing to do** — the image already shows this generation. Covers every repaint from
    exposure, resize, focus change or the letterbox border redraw.
 2. **Incremental** — the previous generation has the same dimensions, so only cells whose
-   colour differs are rewritten.
+   color differs are rewritten.
 3. **Full redraw** — first paint, or the board dimensions changed (the board-size control).
 
 The full path retains the buffer clear, because it is what paints the cell separators. The
@@ -72,7 +88,7 @@ that floor isolates the work actually changed:
 ### Tests
 
 Four tests added (103 total, all passing). The load-bearing one is
-`incrementalRenderMatchesFullRender`: the entire optimisation rests on the incremental and
+`incrementalRenderMatchesFullRender`: the entire optimization rests on the incremental and
 full paths producing identical pixels, so that is asserted directly rather than inferred —
 a sequence rendered step by step is compared pixel-for-pixel against the final board rendered
 from scratch.
@@ -120,8 +136,9 @@ A property test that has never been seen to fail is not evidence.
 ## P1-2 — Bands capped by the work that exists ◐ Partly done
 
 **Read this first.** P1-2 as originally written — "remove the per-generation barrier" — was
-**not** done, and is not what this change is. The barrier is still there and the simulation
-thread still parks in `invokeAll`. Investigating it surfaced a different, concrete defect,
+**not** done, and is not what this change is. The barrier is still there, and at the time
+the simulation thread still parked in `invokeAll` (N5 later replaced that by dispatching all
+but one band). Investigating it surfaced a different, concrete defect,
 which is what was fixed. The ceiling P1-2 describes is unchanged for dense boards.
 
 ### What the investigation actually found
@@ -147,7 +164,7 @@ any large grid holding a small population.
 
 ### Change
 
-`LifeRules.bandsFor` caps the requested band count by how many bands the active rows can
+`LifeRules.bandsFor` (now `PartitionPlanner.bandsFor`) caps the requested band count by how many bands the active rows can
 usefully fill, using the same rows-per-band figure `PartitionPlanner` uses. The planner
 measured that constant against full boards, where the active region spans nearly everything;
 this applies the identical rule to the rows that actually carry work.
@@ -155,7 +172,8 @@ this applies the identical rule to the rows that actually carry work.
 Band count is purely a work-distribution choice — the resulting board is identical whatever
 it returns, which `PartitionEquivalenceTest` already pins down.
 
-File: [`LifeRules.java`](../src/main/java/com/conway/engine/LifeRules.java).
+File at the time: `LifeRules.java`. The cap now lives in
+[`PartitionPlanner.java`](../src/main/java/com/conway/engine/rules/PartitionPlanner.java).
 
 ### Measured effect
 
@@ -186,7 +204,7 @@ all execute four bands. Any spread between them is measurement noise, not scalin
 
 ### Tests
 
-Twelve tests added in `LifeRulesBandingTest` (118 total, all passing), covering the
+Twelve tests added in `LifeRulesBandingTest`, now `BandCapTest` (118 total, all passing), covering the
 rows-to-bands mapping, the sparse case that regressed, dense boards using every requested
 band, degenerate inputs (empty region, zero and negative partitions), and bounds across 200
 board heights.
@@ -201,21 +219,23 @@ board with a blinker. Under the new rule that is one band, computed inline, so t
 is never touched and the pool could not grow. The tests were silently depending on the engine
 always splitting.
 
-They now use a 420-row board with stable blocks at both ends, so the active region spans the
-full height permanently and eight bands are genuinely used. Worth noting as a behaviour
-change in its own right: **small boards no longer use the worker pool at all.**
+They were moved to a 420-row board with stable blocks at both ends, so the active region
+spans the full height permanently and eight bands are genuinely used. Both tests were later
+deleted with the `ThreadPoolExecutor`; `SimulationEngineTest.partitionCountsAreHonored`,
+which replaced them, keeps the same 420-row board for the same reason. Worth noting as a
+behavior change in its own right: **small boards no longer use the worker pool at all.**
 
 ### Honest limits
 
-- **The barrier is untouched.** The simulation thread still parks in `invokeAll` and is still
-  idle most of its life on a dense board. This change stops the engine paying coordination
+- **The barrier is untouched.** At the time, the simulation thread still parked in
+  `invokeAll` and was idle most of its life on a dense board (N5 later changed that). This change stops the engine paying coordination
   cost when there is nothing to coordinate; it does not raise the ceiling when there is.
 - **A second O(board) cost was found and not fixed.** `computeBand`'s tail copies `everAlive`
   and ORs it with the new board across every row in the band and every column,
   ignoring the active region entirely. That is why a blinker on an 801 board still costs
   ~50 µs per generation when its actual work is a handful of cells. See follow-ups.
-- **The rows-per-band constant is shared but not configurable here.** `LifeRules` uses
-  `PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION` directly, so
+- **The rows-per-band constant is shared but not configurable here.** The cap (now
+  `PartitionPlanner.bandsFor`) uses `PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION` directly, so
   `-Dconway.minRowsPerPartition` retunes the planner's recommendation but not this cap. Worth
   unifying if that override is ever used in anger.
 
@@ -223,12 +243,17 @@ change in its own right: **small boards no longer use the worker pool at all.**
 
 | Item | Rationale |
 | --- | --- |
-| Prune the `everAlive` pass to the active region | The measured floor for sparse boards. `dst` is false outside the active region, so `dstEver == srcEver` there: a bulk copy plus an OR restricted to the active region would be equivalent and much cheaper. |
+| Prune the `everAlive` pass to the active region | The measured floor for sparse boards. `dst` is false outside the active region, so `dstEver == srcEver` there: a bulk copy plus an OR restricted to the active region would be equivalent and much cheaper. **Tried under N1 in four variants; all slowed dense boards and were reverted.** |
 | Reconsider the barrier itself | Only worth it if large-board throughput becomes a goal. Pipelining generation N+1 against rendering of N would change the single-writer model, which is what makes the current design safe. |
 
 ---
 
 ## P1-3 — Worker pool sized to the partition count ✅ Done
+
+> **Superseded.** Everything below describes a `ThreadPoolExecutor` that no longer exists:
+> the Java 21 migration replaced it with virtual-thread band workers, and those became a
+> `ForkJoinPool` with parallelism `min(maxPartitions, cores)` on 2026-09-24. Neither pool has
+> a core size to track, and the three tests named here were deleted with it.
 
 **Problem.** The thread dump showed **20 live `conway-worker` threads serving 4 concurrent
 bands**. The pool was created with `corePoolSize == maximumPoolSize == maxPartitions` (20).
@@ -291,7 +316,7 @@ worker only exits once a poll genuinely times out — so the surplus goes away w
 `WORKER_KEEPALIVE_SECONDS` (60 s), not at once.
 
 The test now asserts the core size, which is deterministic and is the part this engine
-controls; reclamation timing belongs to the JDK. The behaviour is acceptable regardless: the
+controls; reclamation timing belongs to the JDK. The behavior is acceptable regardless: the
 finding was unbounded accumulation, not slow reclamation.
 
 ### Honest limits
@@ -440,7 +465,11 @@ One line: carry the flags forward before returning. Covered by
 *"its trail must outlive it"* and passes now, plus `everAliveAccumulates` for the ordinary
 path.
 
-File: [`LifeRules.java`](../src/main/java/com/conway/engine/LifeRules.java).
+The early return has since been removed altogether: an empty board now takes the ordinary
+single-band path, which carries the flags forward like any other generation, and both tests
+still pin the behavior.
+
+File: [`LifeRules.java`](../src/main/java/com/conway/engine/rules/LifeRules.java).
 
 ### N1 — Per-generation allocation: measured, not changed ⬜ Won't fix
 
@@ -475,7 +504,7 @@ Medians from the interleaved run for the best variant:
 **All four were reverted.** The trade is bad for this application: sparse boards were never
 slow in absolute terms — every sparse figure is under 50 µs, over 20,000 generations a second
 — while dense is the actual bottleneck at 246–880 µs, and dense is what the seeded board is.
-Optimising the case nobody waits on, at the cost of the case they do, is the wrong direction.
+Optimizing the case nobody waits on, at the cost of the case they do, is the wrong direction.
 
 The mechanism is consistent across all four attempts: the redundant OR buys sequential access
 over a contiguous row. Skipping work costs more than the work is worth, whether the skip is
@@ -496,7 +525,13 @@ recording `ActiveRegion` is 24.2% of allocation samples, comparable to the array
 The conclusion is unchanged, since GC pause is 0.28% and it is bytes that drive that, but the
 margin quoted was wrong.
 
-### N3 / P2-5 — `Generation.population()` per frame ⬜ Won't fix
+### N3 / P2-5 — `Generation.population()` per frame ✅ Done later
+
+> **Reversed on 2026-08-06.** The change the assessment below judged not worth it was made
+> the next day, and it cost less than feared. The count rides the ever-alive pass, which
+> already visits every cell of the band, so the rule loop is untouched. `BandKernel` returns
+> each band's count, `LifeRules` sums them and hands the total to `Generation.adopt`, and
+> `population()` is now a field read. The original assessment follows.
 
 Confirmed real but **0.1% of total CPU** (3 samples in 2,595). Caching it on `Generation` would
 not help: the engine produces ~18,000 generations a second against 60 frames, so each frame
@@ -506,7 +541,7 @@ the hot loop and the `Generation.adopt` signature for a tenth of a percent. Not 
 
 ---
 
-## N5 — Worker utilisation ◐ Partly done
+## N5 — Worker utilization ◐ Partly done
 
 The one substantive performance lever left after the P1 work. Three profiles gave three
 different answers about the per-generation barrier; the wall-clock one measured the right
@@ -514,7 +549,7 @@ thing.
 
 | Profile | Said | Assessment |
 | --- | --- | --- |
-| Instrumented snapshot | Simulation thread 83% idle, "barrier is the bottleneck" | Wrong framing. That thread is a coordinator; idle is correct behaviour, and its 17.3% CPU was mostly instrumentation overhead |
+| Instrumented snapshot | Simulation thread 83% idle, "barrier is the bottleneck" | Wrong framing. That thread is a coordinator; idle is correct behavior, and its 17.3% CPU was mostly instrumentation overhead |
 | P2-4, CPU-only JFR | Simulation thread is 1 sample in 2,595 | True, but silent on the workers — parked threads emit no CPU samples |
 | P2-4b, wall-clock | **Workers compute 55% of the time**, parked 35%, coordinating 10% | The real measurement |
 
@@ -591,7 +626,7 @@ few percent more — not a multiple.
 | --- | --- | --- |
 | **`Phaser` with persistent band loops** | The remaining hand-offs | Workers become engine-owned rather than a shared pool, so `setPartitions` turns from a cheap command into a reconfiguration, and pausing must be handled explicitly or the spin phase burns CPU while idle. Safety is preserved: `arriveAndAwaitAdvance` gives the same happens-before edge |
 | **Finer bands** | Imbalance | Now known to be worth 5–19% at most, and `bandsFor` caps band count because more bands measured 5.4× slower on a sparse board. Not worth pursuing |
-| **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent |
+| **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent. **Later adopted in its cheap form** (2026-09-24): a `ForkJoinPool` as the executor behind the unchanged band model, measured 12–19% faster at 201×201 with four partitions. The rewrite described here stays rejected |
 
 **Recommendation: stop here.** The cheap, low-risk part is done. What is left is a few percent
 behind a real concurrency redesign, on an engine already running ~300× faster than the 60 fps

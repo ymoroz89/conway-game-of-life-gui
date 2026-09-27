@@ -128,8 +128,12 @@ public final class PartitionPlanner {
     }
 
     /**
-     * The upper bound the machine supports: twice the core count, never more than the
-     * number of rows. Oversubscription is intentional, for the straggler reason above.
+     * The upper bound the machine supports: {@code min(rows, max(2, 2 × cores))}. Twice the
+     * core count, at least two, and never more than the number of rows. Oversubscription is
+     * intentional, for the straggler reason above.
+     *
+     * <p>Not {@code Math.clamp(2 × cores, 2, rows)}: that throws for a one-row board, where
+     * the floor of two exceeds the row count and the answer must be one.
      */
     public static int hardwareCap(int rows) {
         if (rows <= 0) {

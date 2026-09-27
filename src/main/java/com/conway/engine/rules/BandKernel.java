@@ -18,8 +18,8 @@ import com.conway.model.Generation;
  * <p>Pure CPU: it never blocks, which is why the band workers are a {@code ForkJoinPool}
  * rather than virtual threads. Boundaries are dead: the grid does not wrap.
  *
- * <p>Every loop below hoists the band's arrays out of the fields and into locals, so the
- * per-cell work reads registers rather than reloading {@code this} for each cell.
+ * <p>The per-cell loops take the band's arrays and dimensions as parameters or locals and
+ * never read a field, so a loop body never reloads {@code this}.
  */
 final class BandKernel {
 
@@ -50,21 +50,20 @@ final class BandKernel {
     /**
      * Computes rows {@code [fromRow, toRow)} of the next generation.
      *
-     * <p>Rows come in two shapes and the branch below separates them. A row that is not the
-     * first or last, on a board wide enough for a cell to have neighbors beside it, has all
-     * eight neighbors of every cell on the board, so the run between the first and last
-     * column of such a row needs no bounds checks at all; that is the path that carries the
-     * run time. Every other cell -- the first and last column of such a row, and every cell
-     * of a row along the top or bottom edge -- goes through {@link #ruleAt}, which checks
-     * each neighbor.
+     * <p>Rows come in two shapes and the branch below separates them. In an interior row --
+     * not the first or last, on a board at least three cells wide -- every cell except the
+     * first and last column has all eight neighbors on the board, so that middle run needs
+     * no bounds checks at all; it is the path that carries the run time. Every other cell --
+     * the first and last column of an interior row, and every cell of the top and bottom
+     * rows or of a board too narrow to have a middle run -- goes through {@link #ruleAt},
+     * which checks each neighbor.
      *
      * <p>Rule evaluation is clipped to the active region: cells the region does not reach are
      * not written at all, since a fresh {@code dst} is already dead there. {@code live}
-     * collects the bounding box of the cells this band turns on, which {@link LifeRules}
+     * collects the bounding box of the cells this band leaves alive, which {@link LifeRules}
      * merges with the boxes of the other bands to form the next generation's active region.
      */
     BandResult computeBand(int fromRow, int toRow) {
-        // Locals rather than fields, so the loops below read registers, not the heap.
         final boolean[] src = this.src;
         final boolean[] dst = this.dst;
         final int width = this.width;
@@ -157,9 +156,10 @@ final class BandKernel {
     }
 
     /**
-     * True when every cell of {@code row} has all eight neighbors on the board: the row is
-     * not the first or last, and the board is wide enough for a cell to have neighbors
-     * beside it. No row of a narrower board qualifies, whatever its position.
+     * True when {@code row} has a middle run of cells with all eight neighbors on the board:
+     * the row is not the first or last, and the board is at least three cells wide. The first
+     * and last column of such a row still need checked evaluation. No row of a narrower board
+     * qualifies, whatever its position.
      */
     private static boolean isInteriorRow(int row, int width, int height) {
         return row > 0 && row < height - 1 && width > 2;
@@ -192,15 +192,18 @@ final class BandKernel {
         return population;
     }
 
-    /** Bounds-checked rule evaluation, used for cells on the border of the board. */
+    /**
+     * Bounds-checked rule evaluation, for cells on the border of the board and for every cell
+     * of a board too narrow to have a middle run.
+     */
     private static boolean ruleAt(boolean[] src, int width, int height, int row, int col) {
-        int neighbours = countNeighboursChecked(src, width, height, row, col);
-        return survives(src[row * width + col], neighbours);
+        int neighbors = countNeighborsChecked(src, width, height, row, col);
+        return survives(src[row * width + col], neighbors);
     }
 
-    /** Counts neighbors with full bounds checks (for border/narrow rows). */
-    private static int countNeighboursChecked(boolean[] src, int width, int height, int row, int col) {
-        int neighbours = 0;
+    /** Counts the live neighbors of one cell, skipping any that fall off the board. */
+    private static int countNeighborsChecked(boolean[] src, int width, int height, int row, int col) {
+        int neighbors = 0;
         int rowStart = Math.max(0, row - 1);
         int rowEnd = Math.min(height - 1, row + 1);
         int colStart = Math.max(0, col - 1);
@@ -210,11 +213,11 @@ final class BandKernel {
             int base = r * width;
             for (int c = colStart; c <= colEnd; c++) {
                 if ((r != row || c != col) && src[base + c]) {
-                    neighbours++;
+                    neighbors++;
                 }
             }
         }
-        return neighbours;
+        return neighbors;
     }
 
     private static void handleLeftEdgeIfReached(boolean[] src,
@@ -278,15 +281,15 @@ final class BandKernel {
      * The rule itself: a live cell with two or three live neighbors survives, and a dead
      * cell with exactly three comes alive.
      */
-    private static boolean survives(boolean alive, int neighbours) {
-        return alive ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
+    private static boolean survives(boolean alive, int neighbors) {
+        return alive ? (neighbors == 2 || neighbors == 3) : (neighbors == 3);
     }
 
     /**
-     * The bounding box of the live cells a band turns on, accumulated as the band runs.
+     * The bounding box of the cells a band leaves alive, accumulated as the band runs.
      *
-     * <p>Rows are offered in order, but that is not relied on: any cell may be offered at
-     * any time, and a row that carries no live cells changes nothing.
+     * <p>Rows arrive in order, but nothing depends on that, and a row that carries no live
+     * cells changes nothing.
      */
     private static final class LiveBounds {
 
@@ -316,8 +319,8 @@ final class BandKernel {
     }
 
     /**
-     * Mutable row bounds collected while evaluating one row. Reused per-row to avoid
-     * allocations inside the hot loop.
+     * The live columns of the row being evaluated. One instance per band, reset for each row,
+     * so the per-row bookkeeping allocates nothing.
      */
     private static final class RowBounds {
         int minCol = Integer.MAX_VALUE;

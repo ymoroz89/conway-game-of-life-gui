@@ -175,7 +175,7 @@ class LifeRulesTest {
                 "OOO",
                 "OOO");
 
-        // Only the four corners survive: each has exactly three neighbours.
+        // Only the four corners survive: each has exactly three neighbors.
         assertEquals(List.of(
                 "O.O",
                 "...",
@@ -183,10 +183,10 @@ class LifeRulesTest {
     }
 
     @Test
-    @DisplayName("The grid does not wrap: neighbours off the edge count as dead")
+    @DisplayName("The grid does not wrap: neighbors off the edge count as dead")
     void bordersDoNotWrap() throws Exception {
         // Were the board toroidal, these three corner cells would each see enough
-        // neighbours to survive and to breed a fourth cell.
+        // neighbors to survive and to breed a fourth cell.
         Generation start = board(
                 "O.O",
                 "...",
@@ -300,7 +300,7 @@ class LifeRulesTest {
         // single failure path produces the same diagnostic no matter which band broke.
         try (ExecutorService failing = failingBandExecutor()) {
             LifeRules failingRules = new LifeRules(failing);
-            // Dense and tall enough that the requested count is honoured: 120 active rows
+            // Dense and tall enough that the requested count is honored: 120 active rows
             // allow two bands of 50+ rows, so exactly one task is dispatched and one runs
             // inline, and the dispatched one fails.
             Generation start = random(120, 120, new Random(42L), 0.35d);

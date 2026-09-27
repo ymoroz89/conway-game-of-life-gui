@@ -105,7 +105,7 @@ public final class LifeRules {
             throw new SimulationException("Generation computation failed", e);
         }
 
-        extractComputationResults(bands, results, futures);
+        joinDispatchedBands(bands, results, futures);
         return results;
     }
 
@@ -138,15 +138,10 @@ public final class LifeRules {
      * @throws InterruptedException if the calling thread is interrupted while waiting
      * @throws SimulationException  if any band fails
      */
-    private static void extractComputationResults(int bands, BandResult[] results,
-                                                  List<Future<BandResult>> futures) throws InterruptedException {
+    private static void joinDispatchedBands(int bands, BandResult[] results,
+                                            List<Future<BandResult>> futures) throws InterruptedException {
         for (int i = 1; i < bands; i++) {
             try {
-                // Future.get supplies the happens-before edge for the dispatched bands; band
-                // zero was written by this thread, so its writes were already visible. The
-                // Java 21 accessors (state(), resultNow(), exceptionNow()) cannot replace this
-                // call: none of them waits, and there is nothing to read until the band has
-                // actually been joined.
                 results[i] = futures.get(i - 1).get();
             } catch (ExecutionException e) {
                 // Whatever has not been joined yet is pure loss in a failed generation.

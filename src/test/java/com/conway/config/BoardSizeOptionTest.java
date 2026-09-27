@@ -49,7 +49,7 @@ class BoardSizeOptionTest {
         assertEquals(List.of(201, 401, 801, 1601),
                 options.stream().map(BoardSizeOption::cells).toList());
         assertEquals("1601", BoardSizeOption.find(options, 1601).label(),
-                "a size with no round equivalent is labelled with its actual value");
+                "a size with no round equivalent is labeled with its actual value");
     }
 
     @Test

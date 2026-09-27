@@ -46,7 +46,8 @@ import com.conway.model.Generation;
  * the repaint rate is not swamped by the simulation.
  *
  * <p>Confined to the event dispatch thread. Engine callbacks arrive on the simulation
- * thread and are marshaled here explicitly.
+ * thread (or, for {@code STOPPED}, on whichever thread closed the engine) and are
+ * marshaled here explicitly.
  */
 // Swing components inherit Serializable; this application never serializes them.
 @SuppressWarnings("serial")

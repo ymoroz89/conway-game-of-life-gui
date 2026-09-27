@@ -12,8 +12,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <h2>Threading</h2>
  * Registration happens on caller threads while notification happens on the simulation
- * thread, so the backing list is a {@link CopyOnWriteArrayList}: writes are rare, reads
- * happen on the simulation thread, and a read never blocks a registration or vice versa.
+ * thread (and, for {@code STOPPED}, on the thread calling {@code close()}), so the backing
+ * list is a {@link CopyOnWriteArrayList}: writes are rare, and a read never blocks a
+ * registration or vice versa.
  *
  * <p>Callbacks run on the notifying thread. Implementations that touch Swing must marshal
  * to the event dispatch thread themselves; {@code LifeFrame} does.

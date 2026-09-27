@@ -32,7 +32,8 @@ import com.conway.model.PatternLoader;
  *       pool (see {@link com.conway.engine.SimulationEngine}), which measured 12-19% faster
  *       at 201/4 partitions with parity at 801. The mode remains for comparison.</li>
  *   <li>{@code forkjoin} &mdash; a dedicated {@link java.util.concurrent.ForkJoinPool}
- *       with parallelism equal to the core count. Bands are uneven, because
+ *       with parallelism {@code min(maxPartitions, cores)}, the configuration the
+ *       application ships. Bands are uneven, because
  *       {@code computeBand} clips rule evaluation to the active region, and the cores are
  *       asymmetric; work stealing is the standard answer to both, so it is worth
  *       measuring against the other two.</li>
@@ -131,7 +132,7 @@ public final class GenerationBenchmark {
                 board = rules.next(board, partitions);
             }
             long elapsed = System.nanoTime() - start;
-            // Consume the result so the loop cannot be optimised away.
+            // Consume the result so the loop cannot be optimized away.
             if (board.population() < 0) {
                 throw new IllegalStateException("unreachable");
             }

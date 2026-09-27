@@ -99,14 +99,14 @@ public final class BoardView extends JPanel {
         setBackground(Theme.BACKGROUND);
 
         // MouseAdapter, so unused callbacks are genuinely absent. Overriding every
-        // MouseListener method and throwing from the ones that are not needed to be meant
-        // an exception on every pointer entry, exit and click.
+        // MouseListener method and throwing from the ones that are not needed meant an
+        // exception on every pointer entry, exit and click.
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
                 // Mapped through the drawn rectangle rather than the component bounds, so
                 // a press lands on the cell under the pointer even when the component is
-                // wider or taller than the board and the board are inset within it.
+                // wider or taller than the board and the board is inset within it.
                 Rectangle viewport = viewport();
                 int row = geometry.rowAt(e.getY() - viewport.y, viewport.height);
                 int col = geometry.columnAt(e.getX() - viewport.x, viewport.width);
@@ -180,7 +180,7 @@ public final class BoardView extends JPanel {
 
     /**
      * The rectangle the board is drawn into: the largest area with the board's own aspect
-     * ratio that fits the component, centred, with any leftover space left as margin.
+     * ratio that fits the component, centered, with any leftover space left as margin.
      *
      * <p>Stretching to the component bounds instead would make cells non-square whenever
      * the window is not square &mdash; maximising the window turned a 201x201 board into a

@@ -8,8 +8,25 @@ Analysis of a VisualVM CPU snapshot and a JVM thread dump captured on 2026-07-31
 > A1, A2, P1-1 and P1-3, but showed that **P1-2's premise does not hold**: the simulation
 > thread accounts for 1 execution sample in 2,595 and every barrier wait is microseconds.
 > The barrier is not the bottleneck; the 17.3% CPU below was largely instrumentation
-> overhead on that thread. See [P1-2](#p1-2--the-per-generation-barrier-is-the-bottleneck)
+> overhead on that thread. See [P1-2](#p1-2--the-per-generation-barrier-is-the-parallelism-ceiling)
 > for the correction in place.
+
+## Where each finding stands
+
+Details are in [profiling-issues-fixing-progress.md](profiling-issues-fixing-progress.md).
+Class names, line numbers and thread names below are quoted as captured on 2026-07-31:
+`LifeRules` then lived in `com.conway.engine`, `ruleAt` has since moved to `BandKernel`, and
+the band workers were a `ThreadPoolExecutor` whose threads were named `conway-worker-N`.
+
+| Finding | Status |
+| --- | --- |
+| A1, A2 | Profiler artifacts, confirmed by the clean profile. No action |
+| P1-1 | Fixed: the renderer redraws only cells whose color changed |
+| P1-2 | Premise withdrawn. The band count is now capped by the active region, and the calling thread computes one band itself |
+| P1-3 | Fixed, then superseded: the band workers are now a `ForkJoinPool` with parallelism `min(maxPartitions, cores)` |
+| P2-4 | Done: two JFR re-profiles, one CPU-sampled and one wall-clock |
+| P2-5 | Done: the population is counted during the band pass, so `Generation.population()` is O(1) |
+| P2-6, P3-7..10, H-11..16 | Context only. No action |
 
 ## Source artifacts
 
@@ -43,7 +60,7 @@ independently confirms two conclusions the snapshot alone could only suggest.
 ## Reproducing the analysis
 
 An `.nps` file is `nBpRoFiLeR` magic, a 24-byte header, then a zlib stream. The payload is a
-serialised `CPUResultsSnapshot`, so the profiler's own reader parses it — no need to
+serialized `CPUResultsSnapshot`, so the profiler's own reader parses it — no need to
 reverse-engineer the calling-context tree:
 
 ```java
@@ -81,9 +98,10 @@ suspected from the snapshot.
 
 ### A1 — `ruleAt` and `colorOf` "hot spots" are instrumentation overhead
 
-The snapshot ranks `LifeRules.ruleAt` at 20% self time (67.8 s) and `BoardView.colorOf` at
-7.4% (24.8 s). Their invocation counts are 125,973,820 and 56,601,801, giving **539 ns and
-438 ns per call** for methods that perform a few array reads.
+The snapshot ranks `LifeRules.ruleAt` (now `BandKernel.ruleAt`) at 20% self time (67.8 s)
+and `BoardView.colorOf` at 7.4% (24.8 s). Their invocation counts are 125,973,820 and
+56,601,801, giving **539 ns and 438 ns per call** for methods that perform a few array
+reads.
 
 The dump caught *both* RUNNABLE application threads inside the profiler's own probe,
 wrapping precisely these two methods:
@@ -108,7 +126,7 @@ session is pathological; the cost attributed to them does not exist at runtime.
 | `refresh()` calls | 2,140 | ~9,340 due at a 16 ms timer |
 
 The Swing `Timer` coalesced heavily because the EDT could not keep up under instrumentation.
-None of these rates reflect production behaviour.
+None of these rates reflect production behavior.
 
 ---
 
@@ -158,7 +176,7 @@ drops from O(board) to O(changed).
         at com.conway.engine.LifeRules.next(LifeRules.java:80)
 ```
 
-`LifeRules.java:80` is the `invokeAll` join. Utilisation is **71,460 ms / 413,350 ms =
+`LifeRules.java:80` is the `invokeAll` join. Utilization is **71,460 ms / 413,350 ms =
 17.3%** — the simulation thread is blocked roughly 83% of its life waiting for workers.
 
 This is the mechanism behind the 1.15× speedup ceiling measured at 201×201, and it explains

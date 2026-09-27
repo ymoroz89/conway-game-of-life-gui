@@ -73,11 +73,6 @@ public final class LifeConfig {
         return gridSize;
     }
 
-    /** Edge length of a single cell in pixels, never less than one. */
-    public int cellSizePx() {
-        return cellSizePx;
-    }
-
     /**
      * Cell size for a board of {@code gridSize} cells, so the board can be resized at
      * runtime without rebuilding the configuration.
@@ -89,11 +84,6 @@ public final class LifeConfig {
             throw new IllegalArgumentException("gridSize must be positive but was " + gridSize);
         }
         return Math.max(1, targetBoardSizePx / gridSize);
-    }
-
-    /** Board edge length in pixels. */
-    public int boardSizePx() {
-        return cellSizePx * gridSize;
     }
 
     /** Repaint rate. Rendering is deliberately decoupled from the simulation rate. */

@@ -61,7 +61,7 @@ class SimulationEngineTest {
     @Test
     @Timeout(30)
     @DisplayName("Queued step requests are never dropped")
-    void queuedStepsAreAllHonoured() throws Exception {
+    void queuedStepsAreAllHonored() throws Exception {
         // The previous wait/notify design silently discarded a step request whenever
         // the controller thread was not already parked in wait(). Because commands are
         // queued rather than signalled, every request must be applied exactly once.
@@ -303,9 +303,9 @@ class SimulationEngineTest {
     }
 
     @Test
-    @DisplayName("Partition counts are honoured and reported by the engine")
+    @DisplayName("Partition counts are honored and reported by the engine")
     @Timeout(30)
-    void partitionCountsAreHonoured() throws Exception {
+    void partitionCountsAreHonored() throws Exception {
         // The band workers run on a dedicated ForkJoinPool whose parallelism is fixed at
         // construction, so there is no pool-sizing apparatus to test and nothing to resize
         // when the partition control moves. What still matters is that the requested

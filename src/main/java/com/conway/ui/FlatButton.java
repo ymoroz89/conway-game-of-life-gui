@@ -5,6 +5,7 @@ import java.awt.Cursor;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.io.Serial;
 
 import javax.swing.JButton;
 
@@ -19,14 +20,18 @@ import javax.swing.JButton;
  * <p>Only the fill is custom. Text, mnemonic underlines and accessibility all come from
  * {@link JButton}, so keyboard traversal and screen readers behave normally.
  */
-@SuppressWarnings("serial") // Swing components inherit Serializable; this application never serialises them.
+// Swing components inherit Serializable; this application never serializes them.
+@SuppressWarnings("serial")
 public final class FlatButton extends JButton {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     private static final int CORNER_RADIUS = 8;
 
     /** Visual weight, which encodes how prominent the action is. */
     public enum Variant {
-        /** The primary action. Filled with the accent colour. */
+        /** The primary action. Filled with the accent color. */
         PRIMARY,
         /** Everything routine. A quiet raised surface. */
         SECONDARY,
@@ -95,7 +100,7 @@ public final class FlatButton extends JButton {
         return variant == Variant.PRIMARY ? Theme.ON_ACCENT : Theme.TEXT;
     }
 
-    /** Scales a colour's channels, clamped, so hover and press read as the same hue. */
+    /** Scales a color's channels, clamped, so hover and press read as the same hue. */
     private static Color shade(Color color, float factor) {
         return new Color(
                 clamp(color.getRed() * factor),
@@ -104,6 +109,6 @@ public final class FlatButton extends JButton {
     }
 
     private static int clamp(float channel) {
-        return Math.min(255, Math.max(0, Math.round(channel)));
+        return Math.clamp(Math.round(channel), 0, 255);
     }
 }

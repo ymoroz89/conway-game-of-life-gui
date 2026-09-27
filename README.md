@@ -31,10 +31,11 @@ partitions.](docs/images/screenshot.png)
 - **Work sized to the live area.** Rule evaluation is clipped to a padded bounding box of the
   live cells, and the band count is capped by how many rows that box spans, so a small
   pattern on a large board runs inline instead of being split into empty bands.
-- **Rendering on its own clock.** A Swing `Timer` pulls the newest snapshot 60 times a
-  second. Generations produced between frames are skipped, never queued.
+- **Rendering on its own clock.** A Swing `Timer` pulls the newest snapshot at a fixed
+  rate, about 60 frames a second by default. Generations produced between frames are
+  skipped, never queued.
 - **An incremental, HiDPI renderer.** Packed RGB goes straight into the `int[]` behind one
-  `BufferedImage` at the display's scale factor, and only cells whose colour changed are
+  `BufferedImage` at the display's scale factor, and only cells whose color changed are
   rewritten.
 - **Compiler-checked commands.** A `sealed` command hierarchy is consumed by an exhaustive
   pattern-matching `switch`: a command that is not handled does not compile.
@@ -175,15 +176,16 @@ outside the simulation thread ever touches the board.
 | --- | --- |
 | [`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java) | The actor. Owns the board, drains the command queue, publishes snapshots |
 | [`Command`](src/main/java/com/conway/engine/Command.java) | The sealed vocabulary: a `Signal` enum for data-free commands, records for the rest |
-| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Computes the next generation in row bands; stateless apart from the executor it borrows |
-| [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule behind the default partition count |
+| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Schedules a generation: splits it into row bands, runs them on a borrowed executor, assembles the result |
+| [`BandKernel`](src/main/java/com/conway/engine/rules/BandKernel.java) | The hot loop: applies the rules to one band of rows, clipped to the active region |
+| [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule, both for the default partition count and for the per-generation band cap |
 | [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags, active region, population |
 | [`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java) | A generation and its [`SimulationStats`](src/main/java/com/conway/engine/support/SimulationStats.java), published as one unit |
 | [`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java) | The window: controls, status bar and render timer. Translates gestures into commands |
 | [`BoardView`](src/main/java/com/conway/ui/BoardView.java) | The incremental pixel renderer and pointer-to-cell mapping |
 | [`GenerationBenchmark`](src/main/java/com/conway/bench/GenerationBenchmark.java) | Headless throughput harness with three executor modes |
 
-The grid is bounded, not toroidal: neighbours off the edge count as dead. Patterns are
+The grid is bounded, not toroidal: neighbors off the edge count as dead. Patterns are
 data — plaintext [`.cells`](src/main/resources/patterns) resources — not hard-coded index
 assignments.
 
@@ -199,7 +201,7 @@ Swing has one rule that shapes everything: **only the event dispatch thread (the
 touch a Swing component.** That thread is also the one that delivers button clicks and
 repaints the window. So if you compute a generation directly inside a button's
 `ActionListener`, the EDT is busy doing that work and cannot repaint or respond to
-anything — the window goes grey and the OS reports it as not responding.
+anything — the window goes gray and the OS reports it as not responding.
 
 Meanwhile, a Game of Life board is real CPU work, repeated forever: at the default
 201×201 board the engine produces thousands of generations per second, each one
@@ -285,9 +287,13 @@ public void toggleCell(int row, int col) { submit(new Command.ToggleCell(row, co
 
 The rest of the public surface works differently, by design: `snapshot()`,
 `currentGeneration()`, `stats()` and `state()` read published `volatile` fields;
-`addListener` registers a callback; and `sync()` and `close()` deliberately block — one
-until every earlier command has been processed, the other until the simulation thread has
-stopped.
+`maxPartitions()` returns a value fixed at construction; `addListener` registers a
+callback; and `sync()` and `close()` deliberately block — one until every earlier command
+has been processed, the other until the simulation thread has stopped.
+
+On the simulation thread, `handle` only routes: each command has its own small handler
+(`handleStart`, `handleStep`, `handleToggleCell` and so on), so what any one command does
+can be read in a single short method.
 
 `Command` is a `sealed interface` implemented by an enum of data-free signals and by
 records for the commands that carry data, so the loop that consumes it can `switch` over
@@ -341,8 +347,8 @@ The board is split into contiguous **row bands**. Band *k* reads the previous ge
 (which nobody is writing) and writes only its own rows of the new arrays. Because no two
 bands ever touch the same memory, the workers need no lock or atomic between themselves.
 
-Three details in [`LifeRules.next`](src/main/java/com/conway/engine/rules/LifeRules.java)
-that a diagram would hide:
+Three details in how [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)
+runs a generation that a diagram would hide:
 
 - **The caller works too.** The simulation thread does not just dispatch and wait. It
   submits bands 1..N−1 to the executor and then computes **band 0 itself**, so it does
@@ -351,7 +357,7 @@ that a diagram would hide:
   is done *and* establishes a happens-before edge, which is the guarantee that the
   worker's writes are visible to the joining thread. Band 0 needs no join because the
   same thread wrote it.
-- **Failure is loud.** If any band throws, the bands still pending are cancelled and the
+- **Failure is loud.** If any band throws, the bands still pending are canceled and the
   generation is abandoned as a `SimulationException` — never published half-computed.
   The engine pauses and enters `FAILED`, and `LifeFrame` shows an error dialog.
 
@@ -377,7 +383,7 @@ its ticks, so the EDT never has a frame backlog to work through.
 
 Each frame is also cheap. `BoardView` remembers the generation its image already shows: a
 repaint caused by exposure or a resize just re-blits that image, and a new generation of
-the same size rewrites only the cells whose colour changed. The image is rendered at the
+the same size rewrites only the cells whose color changed. The image is rendered at the
 display's scale factor, so cells stay crisp on a Retina screen, and it is letterboxed into
 the window, so cells stay square at any window size.
 
@@ -463,7 +469,7 @@ Each feature below is used where it removes code or closes off a class of bug.
 | Pattern matching for `switch` (JEP 441) | 21 | `SimulationEngine.handle` | Exhaustive dispatch over the sealed `Command` hierarchy |
 | Record patterns (JEP 440) | 21 | `SimulationEngine.releasePendingBarriers` | Matches and destructures `Barrier(CountDownLatch latch)` in one step |
 | Sequenced collections (JEP 431) | 21 | `Pattern.parse` | `getLast()` and `removeLast()` to trim trailing blank rows |
-| `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `LifeRules.bandsFor`, `PartitionPlanner` | One call for every range check on a partition count |
+| `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `PartitionPlanner.recommend` and `bandsFor`, `FlatButton` | One call per range check, for partition counts and color channels |
 | `ExecutorService` as `AutoCloseable` | 19 | `SimulationEngine.close`, `GenerationBenchmark` | Shutdown and await in a single call |
 | Records and sealed interfaces | 16, 17 | `Command`, `EngineSnapshot`, `SimulationStats`, `ActiveRegion`, `BoardSizeOption` | Closed vocabularies and immutable value types without boilerplate |
 
@@ -498,7 +504,7 @@ itself.
 | --- | --- |
 | `PartitionEquivalenceTest` | Identical boards at every band count, plus oversized and non-positive requests |
 | `LifeRulesTest` | The rules: still lifes, oscillators, gliders, dead borders, trails, population counts, band-failure reporting |
-| `LifeRulesBandingTest` | The per-generation band cap follows the rows that carry work |
+| `BandCapTest` | The per-generation band cap follows the rows that carry work |
 | `PartitionPlannerTest` | The planner reproduces each board's measured optimum and respects the hardware cap |
 | `SimulationEngineTest` | Queued steps are never dropped; start, pause, clear and edits during a run; held snapshots never change; `close()` is idempotent |
 | `BoardViewTest`, `CellGeometryTest` | Incremental rendering matches a full redraw; letterboxing; pointer-to-cell mapping |
@@ -654,8 +660,8 @@ count — but neither can push past `floor(activeRows / 50)`.
 The engine applies the same rows-per-band rule again on every generation, against the
 **active region** — a padded bounding box of the live cells, not the full grid — and
 computes inline when there is too little live area to fill the bands. A generation is
-split across at most `floor(activeRows / 50)` bands (`bandsFor` floors a too-small region
-to one band before clamping).
+split across at most `floor(activeRows / 50)` bands (`PartitionPlanner.bandsFor` floors a
+too-small region to one band before clamping).
 
 What counts is how many rows the live cells span, not how many live cells there are. A
 board whose live cells span fewer than 100 rows once padded is capped to a single band,

@@ -85,7 +85,7 @@ class BoardViewTest {
     }
 
     @Test
-    @DisplayName("Alive, died-here and never-populated cells each render in their theme colour")
+    @DisplayName("Alive, died-here and never-populated cells each render in their theme color")
     void rendersCellStates() {
         boolean[] alive = new boolean[ROWS * COLUMNS];
         boolean[] everAlive = new boolean[ROWS * COLUMNS];
@@ -119,7 +119,7 @@ class BoardViewTest {
     }
 
     @Test
-    @DisplayName("The board keeps its aspect ratio and centres itself in a non-square component")
+    @DisplayName("The board keeps its aspect ratio and centers itself in a non-square component")
     void boardIsLetterboxedRatherThanStretched() {
         // Maximising the window used to stretch a square board across the full width,
         // making cells rectangular and skewing the diagonals the simulation produces.
@@ -129,7 +129,7 @@ class BoardViewTest {
 
         assertEquals(200, viewport.width, "width should be limited by the shorter axis");
         assertEquals(200, viewport.height, "board must stay square");
-        assertEquals(100, viewport.x, "board should be centred horizontally");
+        assertEquals(100, viewport.x, "board should be centered horizontally");
         assertEquals(0, viewport.y);
     }
 
@@ -174,7 +174,7 @@ class BoardViewTest {
     @DisplayName("Rendering a sequence incrementally matches rendering the last board from scratch")
     void incrementalRenderMatchesFullRender() {
         // The renderer updates the image as a difference against the previous generation
-        // instead of redrawing every cell. The whole optimisation rests on the two paths
+        // instead of redrawing every cell. The whole optimization rests on the two paths
         // producing identical pixels, so that is asserted directly.
         Generation first = generation(cells(0), cells(0));                 // (0,0) alive
         Generation second = generation(cells(11), cells(0, 11));           // (0,0) died, (1,1) alive
@@ -216,7 +216,7 @@ class BoardViewTest {
     @Test
     @DisplayName("Cell separators survive incremental updates")
     void separatorsAreNotOverwrittenByIncrementalUpdates() {
-        // The full-redraw path clears the buffer to the separator colour; the incremental
+        // The full-redraw path clears the buffer to the separator color; the incremental
         // path must not paint over it when it rewrites a cell.
         BoardView view = newView();
         view.setSize(COLUMNS * CELL_SIZE, ROWS * CELL_SIZE);
@@ -340,7 +340,7 @@ class BoardViewTest {
                 view, id, System.currentTimeMillis(), 0, x, y, 1, false, MouseEvent.BUTTON1));
     }
 
-    /** Reads the centre pixel of a cell, clear of the separator. */
+    /** Reads the center pixel of a cell, clear of the separator. */
     private static int rgb(BufferedImage image, int row, int col) {
         return image.getRGB(col * CELL_SIZE + CELL_SIZE / 2, row * CELL_SIZE + CELL_SIZE / 2) & 0xFFFFFF;
     }

@@ -19,7 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Single source of truth for the application's colours, fonts and component styling.
+ * Single source of truth for the application's colors, fonts and component styling.
  *
  * <p>Everything here is plain Swing and AWT; no third-party look-and-feel is involved.
  * The approach is to install Nimbus &mdash; which ships with the JDK and, unlike the
@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory;
  * real polish. Fighting a native look-and-feel to make a spinner or a tooltip dark is
  * not portable; re-seeding Nimbus is.
  *
- * <p>Board colours are held as packed RGB {@code int}s because {@link BoardView} writes
+ * <p>Board colors are held as packed RGB {@code int}s because {@link BoardView} writes
  * them straight into the {@code int[]} backing its image. The {@link Color} forms used
  * by the surrounding chrome are derived from the same values, so the board and the
  * window can never drift apart.
@@ -58,7 +58,7 @@ public final class Theme {
 
     /**
      * Fill for a disabled control. Deliberately lighter than {@link #SURFACE}: a disabled
-     * button painted in the panel's own colour disappears into it, which reads as a
+     * button painted in the panel's own color disappears into it, which reads as a
      * missing control rather than an inactive one.
      */
     public static final Color DISABLED = new Color(0x262B34);
@@ -80,7 +80,7 @@ public final class Theme {
      * Installs the look and feel. Must be called on the event dispatch thread before any
      * component is created.
      *
-     * <p>Nimbus derives its widget colours when it is installed, so the palette keys are
+     * <p>Nimbus derives its widget colors when it is installed, so the palette keys are
      * seeded first. If Nimbus is unavailable the system look and feel is used instead and
      * the hand-styled components below still apply.
      */
@@ -163,7 +163,7 @@ public final class Theme {
 
     /**
      * Restyles a spinner's editor. The arrow buttons come from the look and feel; the
-     * text field is ours, so it gets the theme's surface, a centred value and a caret
+     * text field is ours, so it gets the theme's surface, a centered value and a caret
      * that is visible against a dark background.
      */
     public static void styleSpinner(JSpinner spinner) {

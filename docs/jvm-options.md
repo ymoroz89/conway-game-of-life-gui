@@ -1,6 +1,6 @@
 # Production JVM options
 
-A checklist of JVM flags for running this application, organised by situation. Every
+A checklist of JVM flags for running this application, organized by situation. Every
 flag line in this document was started on both JDK 21 (the project minimum) and JDK 25,
 and every performance claim was measured on this codebase. The conditions are recorded
 under [Evidence](#evidence), so any number here can be reproduced — or overturned.
@@ -11,7 +11,7 @@ Where something has **not** been measured, it says so.
 
 | Case | Add | Why |
 | --- | --- | --- |
-| Every production run | the [baseline](#1-every-production-run) | Bounded heap, crash artefacts, a GC log |
+| Every production run | the [baseline](#1-every-production-run) | Bounded heap, crash artifacts, a GC log |
 | Interactive use, default board | `-XX:+UseG1GC -XX:MaxGCPauseMillis=20` | G1's worst pause (7.3 ms) fits inside a 60 fps frame |
 | Smoothest possible frames | `-XX:+UseZGC`, plus `-XX:+ZGenerational` on JDK 21 | Pauses of ~0.02 ms at the same throughput |
 | Boards above a few thousand cells | ZGC and a heap [sized from the board](#4-large-boards) | G1 pauses grow with the heap; the pixel buffer grows with board² |
@@ -312,6 +312,6 @@ no recording 16,480 generations/s; `settings=default` 15,478 (−6.1%); `setting
 **Large boards and flag compatibility** are in their own sections above.
 
 A caution on reading ZGC's logs, learned the hard way while producing these numbers:
-generational ZGC prints per-cycle summary rows labelled `Allocation Stalls:` whose
+generational ZGC prints per-cycle summary rows labeled `Allocation Stalls:` whose
 counters are normally all zero. Counting those lines reports stalls that never happened.
 A real stall appears as its own event, `Allocation Stall (<thread>) <n>ms`.

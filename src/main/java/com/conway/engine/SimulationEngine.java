@@ -26,8 +26,9 @@ import com.conway.model.Pattern;
  * <h2>Threading model</h2>
  * The engine is a single-writer actor. Exactly one thread &mdash; the simulation
  * thread created in the constructor &mdash; ever mutates simulation state. Every
- * caller-facing method does nothing but enqueue a {@link Command}; nothing outside
- * this class touches the board.
+ * mutating method does nothing but validate its arguments and enqueue a {@link Command};
+ * the reads return published {@code volatile} fields; only {@link #sync} and
+ * {@link #close} block. Nothing outside this class touches the board.
  *
  * <p>The board and its statistics are handed to readers as one immutable
  * {@link EngineSnapshot} published through a single {@code volatile} field. A reader
@@ -36,7 +37,7 @@ import com.conway.model.Pattern;
  * Swing event dispatch thread to render while the simulation runs.
  *
  * <p>Pausing blocks on {@link BlockingQueue#take()} rather than
- * {@code Object.wait()}, so a step request enqueued at any moment is always honoured:
+ * {@code Object.wait()}, so a step request enqueued at any moment is always honored:
  * there is no window in which a notification can be lost, and no spurious wakeup can
  * advance the board. Requests are queued, never dropped.
  *
@@ -49,7 +50,8 @@ import com.conway.model.Pattern;
  * events). What stays here is deliberately not split further: the board, the command loop
  * that mutates it, and the thread that owns both. Separating those would spread the
  * single-writer invariant across objects, and the value of that invariant is that it can
- * be checked by reading one class.
+ * be checked by reading one class. Within the class, {@code handle} only routes; each
+ * command has its own small handler.
  *
  * <h2>Threads</h2>
  * The simulation thread is a <em>virtual</em> thread: it spends its life blocked in
@@ -66,7 +68,8 @@ import com.conway.model.Pattern;
  *       plus efficiency). A generation ends at a barrier, so the slowest band sets the
  *       pace; stealing lets a core that finishes early absorb the rest instead of idling.
  *   <li><strong>Cheaper hand-off.</strong> Per-worker deques avoid the single contended
- *       queue of a fixed pool, which matters at roughly 50,000 band dispatches a second.
+ *       queue of a fixed pool, which matters at 50,000&ndash;60,000 band dispatches a
+ *       second on the default board.
  * </ul>
  *
  * <p>Measured with {@code GenerationBenchmark}'s three executor modes, interleaved: on the
@@ -75,9 +78,9 @@ import com.conway.model.Pattern;
  * large enough that dispatch cost stops mattering.
  *
  * <p>Crucially this does <em>not</em> bring back the {@code ThreadPoolExecutor} sizing
- * apparatus that the Java 21 migration deleted. Parallelism is fixed at construction from
- * the core count and never tracks the partition count, so there is still no core size to
- * keep in sync, no keepalive and no thread factory.
+ * apparatus that the Java 21 migration deleted. Parallelism is fixed at construction as
+ * {@code min(maxPartitions, cores)} and never tracks the partition count, so there is still
+ * no core size to keep in sync, no keepalive and no thread factory.
  */
 public final class SimulationEngine implements AutoCloseable {
 
@@ -282,8 +285,8 @@ public final class SimulationEngine implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
-        // Virtual threads are daemon, so this is hygiene rather than a requirement for the
-        // JVM to exit. close() waits for in-flight bands to finish.
+        // The pool's worker threads are daemon threads, so this is hygiene rather than a
+        // requirement for the JVM to exit. close() waits for in-flight bands to finish.
         workers.close();
         setState(State.STOPPED);
         LOG.info("Simulation engine stopped");
@@ -323,58 +326,117 @@ public final class SimulationEngine implements AutoCloseable {
         }
     }
 
+    /**
+     * Routes a single {@link Command} to its handler, on the simulation thread. The switch is
+     * exhaustive over the sealed {@link Command} hierarchy, so a command without a handler
+     * does not compile.
+     */
     private void handle(Command command) throws InterruptedException {
         switch (command) {
-            case Command.Signal.START -> {
-                if (!running) {
-                    running = true;
-                    clock.startRun();
-                    LOG.info("Run started with {} partition(s)", partitions);
-                    setState(State.RUNNING);
-                }
-            }
-            case Command.Signal.PAUSE -> {
-                if (running) {
-                    running = false;
-                    logRunSummary();
-                }
-                setState(State.PAUSED);
-            }
-            case Command.Signal.STEP -> advance(false);
-            case Command.Signal.CLEAR -> {
-                running = false;
-                clock.reset();
-                board = Generation.empty(board.width(), board.height());
-                publish(board, new SimulationStats(0L, 0L, 0L, partitions));
-                LOG.info("Board cleared");
-                setState(State.PAUSED);
-            }
-            case Command.ToggleCell toggle -> applyToggle(toggle);
-            case Command.PlacePattern place -> {
-                board = board.withPattern(place.pattern(), place.row(), place.col());
-                publish(board, snapshot.stats());
-                LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
-            }
-            case Command.SetPartitions setPartitions -> {
-                if (partitions != setPartitions.count()) {
-                    partitions = setPartitions.count();
-                    LOG.info("Partition count changed to {}", partitions);
-                    publish(board, new SimulationStats(
-                            board.number(), clock.generations(), clock.elapsedNanos(), partitions));
-                }
-            }
-            case Command.Barrier barrier -> barrier.latch().countDown();
-            case Command.Signal.SHUTDOWN -> {
-                if (running) {
-                    running = false;
-                    logRunSummary();
-                }
-                shutdownRequested = true;
-            }
+            case Command.Signal.START -> handleStart();
+            case Command.Signal.PAUSE -> handlePause();
+            case Command.Signal.STEP -> handleStep();
+            case Command.Signal.CLEAR -> handleClear();
+            case Command.ToggleCell toggle -> handleToggleCell(toggle);
+            case Command.PlacePattern place -> handlePlacePattern(place);
+            case Command.SetPartitions set -> handleSetPartitions(set);
+            case Command.Barrier barrier -> handleBarrier(barrier);
+            case Command.Signal.SHUTDOWN -> handleShutdown();
         }
     }
 
-    private void applyToggle(Command.ToggleCell toggle) {
+    // --- Per-command handlers (small, intent-revealing, single responsibility) ---
+
+    /**
+     * Starts continuous advancement of generations if not already running.
+     * Updates run clock and notifies listeners of {@link State#RUNNING}.
+     */
+    private void handleStart() {
+        if (!running) {
+            running = true;
+            clock.startRun();
+            LOG.info("Run started with {} partition(s)", partitions);
+            setState(State.RUNNING);
+        }
+    }
+
+    /**
+     * Pauses the simulation if it is running and logs a run summary. Always leaves the
+     * engine {@link State#PAUSED}, which also clears a {@link State#FAILED}.
+     */
+    private void handlePause() {
+        if (running) {
+            running = false;
+            logRunSummary();
+        }
+        setState(State.PAUSED);
+    }
+
+    /**
+     * Advances the simulation by exactly one generation (not counted in throughput).
+     */
+    private void handleStep() throws InterruptedException {
+        advance(false);
+    }
+
+    /**
+     * Clears the board, resets throughput counters, and publishes an empty snapshot.
+     * Transitions the engine to {@link State#PAUSED}.
+     */
+    private void handleClear() {
+        running = false;
+        clock.reset();
+        board = Generation.empty(board.width(), board.height());
+        publish(board, new SimulationStats(0L, 0L, 0L, partitions));
+        LOG.info("Board cleared");
+        setState(State.PAUSED);
+    }
+
+    /**
+     * Places a pattern onto the board (clipped to bounds) and republishes the snapshot.
+     */
+    private void handlePlacePattern(Command.PlacePattern place) {
+        board = board.withPattern(place.pattern(), place.row(), place.col());
+        publish(board, snapshot.stats());
+        LOG.debug("Placed {} at ({}, {})", place.pattern().name(), place.row(), place.col());
+    }
+
+    /**
+     * Updates the partitions used for banded computation and republishes stats if changed.
+     */
+    private void handleSetPartitions(Command.SetPartitions setPartitions) {
+        if (partitions != setPartitions.count()) {
+            partitions = setPartitions.count();
+            LOG.info("Partition count changed to {}", partitions);
+            publish(board, new SimulationStats(
+                    board.number(), clock.generations(), clock.elapsedNanos(), partitions));
+        }
+    }
+
+    /**
+     * Releases the caller blocked in {@link #sync}: every command queued before this barrier
+     * has now been processed.
+     */
+    private void handleBarrier(Command.Barrier barrier) {
+        barrier.latch().countDown();
+    }
+
+    /**
+     * Stops continuous advancement, logs a summary, and requests shutdown of the run loop.
+     */
+    private void handleShutdown() {
+        if (running) {
+            running = false;
+            logRunSummary();
+        }
+        shutdownRequested = true;
+    }
+
+    /**
+     * Toggles a single cell if its coordinates are on the board, and republishes the board
+     * with unchanged statistics: an edit does not count toward throughput.
+     */
+    private void handleToggleCell(Command.ToggleCell toggle) {
         Generation current = board;
         if (toggle.row() < 0 || toggle.row() >= current.height()
                 || toggle.col() < 0 || toggle.col() >= current.width()) {
@@ -382,8 +444,8 @@ public final class SimulationEngine implements AutoCloseable {
         }
         boolean live = !current.isAlive(toggle.row(), toggle.col());
         board = current.withCell(toggle.row(), toggle.col(), live);
-        // The throughput counters are unaffected by an edit; republish the unchanged stats
-        // with the new board so the navigation clock never rewinds.
+        // Republish the current statistics with the edited board, so an edit never resets
+        // the status bar's generation count or rate.
         publish(board, snapshot.stats());
         LOG.debug("{} cell at (row {}, col {})", live ? "Added" : "Removed", toggle.row(), toggle.col());
     }
@@ -411,20 +473,30 @@ public final class SimulationEngine implements AutoCloseable {
         }
     }
 
-    /** Single write point for the volatile snapshot: generation and stats change together. */
+    /**
+     * Single write point for the volatile snapshot: generation and stats change together,
+     * ensuring readers always observe a consistent pair.
+     */
     private void publish(Generation generation, SimulationStats stats) {
         snapshot = new EngineSnapshot(generation, stats);
     }
 
+    /**
+     * Logs a concise throughput summary for the last run period.
+     */
     private void logRunSummary() {
-        SimulationStats snapshot = this.snapshot.stats();
+        SimulationStats stats = snapshot.stats();
         LOG.info("Run finished: {} generations in {} s using {} partition(s), {} generations/s",
-                snapshot.generationsInRun(),
-                String.format("%.3f", snapshot.elapsedSeconds()),
-                snapshot.partitions(),
-                String.format("%.1f", snapshot.generationsPerSecond()));
+                stats.generationsInRun(),
+                String.format("%.3f", stats.elapsedSeconds()),
+                stats.partitions(),
+                String.format("%.1f", stats.generationsPerSecond()));
     }
 
+    /**
+     * Updates the externally visible lifecycle {@link State} and notifies listeners
+     * if it changed.
+     */
     private void setState(State newState) {
         if (state == newState) {
             return;
@@ -433,7 +505,10 @@ public final class SimulationEngine implements AutoCloseable {
         listeners.stateChanged(newState);
     }
 
-    /** Prevents callers blocked in {@link #sync} from waiting forever after shutdown. */
+    /**
+     * Prevents callers blocked in {@link #sync(long, TimeUnit)} from waiting forever after
+     * shutdown by draining the command queue and releasing any lingering barriers.
+     */
     private void releasePendingBarriers() {
         List<Command> pending = new ArrayList<>();
         commands.drainTo(pending);

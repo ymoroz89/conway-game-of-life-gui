@@ -7,8 +7,9 @@ package com.conway.engine;
  * interface. The renderer pulls the latest {@link com.conway.model.Generation} on its
  * own schedule, which keeps the simulation rate independent of the frame rate.
  *
- * <p>Callbacks run on the simulation thread. Implementations that touch Swing must
- * marshal to the event dispatch thread themselves.
+ * <p>Callbacks run on the thread that caused the change: the simulation thread, except for
+ * {@code STOPPED}, which {@code close()} raises on its caller's thread. Implementations that
+ * touch Swing must marshal to the event dispatch thread themselves.
  */
 public interface EngineListener {
 

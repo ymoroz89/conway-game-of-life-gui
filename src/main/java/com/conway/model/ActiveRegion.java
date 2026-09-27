@@ -1,7 +1,5 @@
 package com.conway.model;
 
-import java.util.Objects;
-
 /**
  * An immutable integer rectangle, used to track active regions on the board.
  */
@@ -9,22 +7,8 @@ public record ActiveRegion(int minRow, int maxRow, int minCol, int maxCol) {
 
     public static final ActiveRegion EMPTY = new ActiveRegion(Integer.MAX_VALUE, -1, Integer.MAX_VALUE, -1);
 
-    public ActiveRegion {
-        // Canonical constructor
-    }
-
     public boolean isEmpty() {
         return minRow > maxRow || minCol > maxCol;
-    }
-
-    /** Returns a region that includes this region and the cell at (row, col). */
-    public ActiveRegion expandTo(int row, int col) {
-        return new ActiveRegion(
-                Math.min(minRow, row),
-                Math.max(maxRow, row),
-                Math.min(minCol, col),
-                Math.max(maxCol, col)
-        );
     }
 
     /** Returns a region that covers both this and another region. */

@@ -4,6 +4,22 @@ What changed in the move from Java 17 to Java 21, and why. The focus was code
 simplicity, concurrency (virtual threads where they genuinely help), JMM best
 practices, and GC optimizations.
 
+> **Historical record.** This describes the code as the migration left it (2026-08-06,
+> with the band-failure hardening of 2026-08-22). Since then:
+>
+> - **Band workers.** On 2026-09-24 they moved from virtual threads to a dedicated
+>   `ForkJoinPool` with parallelism `min(maxPartitions, cores)`, measured 12–19% faster at
+>   201×201 with four partitions; see the
+>   [concurrency features review](concurrency-features-review.md). The simulation thread is
+>   still a virtual thread.
+> - **Code layout.** `LifeRules` moved to `com.conway.engine.rules` the same day. The
+>   per-band kernel is now `BandKernel`, `bandsFor` is `PartitionPlanner.bandsFor`, and
+>   `Thread.ofPlatform()` is no longer used anywhere.
+> - **GC figures.** Longer runs in [`jvm-options.md`](jvm-options.md) put G1's worst pause on
+>   the default board at 7.28 ms (median 0.51 ms), not the ~1.58 ms of the 20-second
+>   recording below.
+> - **Structured Concurrency** was still a preview API in JDK 25 (JEP 505).
+
 ## Build
 
 `maven.compiler.release` moved from 17 to 21. No preview features are used:
@@ -45,7 +61,8 @@ its population — is what `EngineSnapshot` eliminates.
 
 ## Concurrency: virtual threads
 
-Both the simulation actor thread and the band workers now run on virtual threads.
+The migration moved both the simulation actor thread and the band workers onto virtual
+threads.
 
 ### Simulation actor thread
 
@@ -78,7 +95,7 @@ touches the executor.
 `ThreadPoolExecutor`, `setCorePoolSize`, keepalive, `allowCoreThreadTimeOut`, and the
 unbounded-accumulation bug class that P1-3 in `profiling-findings.md` documented. The
 three pool-sizing tests that pinned `ThreadPoolExecutor` internals were replaced by a
-single test confirming partition counts are honoured and the engine does not fail.
+single test confirming partition counts are honored and the engine does not fail.
 
 ## GC optimizations
 
@@ -87,8 +104,9 @@ touch": two `boolean[]` per generation (~1.5 GB/s at full throughput) are absorb
 G1 with negligible pause, and buffer reuse would break the immutable-snapshot contract
 `BoardView` relies on. So the migration did not change the allocation profile.
 
-Instead, the README now documents recommended JVM flags (bounded `-Xms/-Xmx`, a G1
-pause target, and optional ZGC for very large boards), and a 20-second JFR recording
+Instead, the README documented recommended JVM flags (bounded `-Xms/-Xmx`, a G1
+pause target, and optional ZGC for very large boards; they now live in
+[`jvm-options.md`](jvm-options.md)), and a 20-second JFR recording
 against the virtual-thread benchmark confirmed:
 
 - **GC stays negligible.** Max single pause ~1.58 ms; total a few ms over the run.
@@ -101,7 +119,7 @@ A post-migration review of the Java ≤21 concurrency toolbox
 ([`concurrency-features-review.md`](concurrency-features-review.md)) found one
 robustness gap. When a band failed, `LifeRules.next()` abandoned the survivors:
 they were dispatched, then ran to completion *unseen* while the caller unwound with
-an error. Band futures are now cancelled on any failure — whether the fault hit
+an error. Band futures are now canceled on any failure — whether the fault hit
 band zero on the calling thread or surfaced as `ExecutionException` from a worker —
 so a failed generation stops scheduling new work. The cancellation is hygiene
 rather than a hard stop: band computation never blocks, so the interrupt flag
@@ -112,9 +130,11 @@ The Java 19/21 `Future` accessors (`state()`, `resultNow()`, `exceptionNow()`) w
 considered for the join loop and deliberately not adopted: none of them waits, so
 `get()` remains the only tool that joins a running band while preserving the
 `InterruptedException` contract. The per-feature disposition of the whole toolbox —
-including why `ForkJoinPool` and a `Phaser` band redesign stay rejected — is
-recorded in the review document. Structured Concurrency stayed preview-gated in 21
-and is tracked there as a candidate for a later `release=23+` upgrade.
+including why a `RecursiveTask` decomposition and a `Phaser` band redesign stay
+rejected — is recorded in the review document. (A `ForkJoinPool` was later adopted as
+the executor behind the unchanged band model, which is a different change.) Structured
+Concurrency stayed preview-gated in 21 and is tracked there; it was still in preview in
+JDK 25.
 
 ## Verification
 

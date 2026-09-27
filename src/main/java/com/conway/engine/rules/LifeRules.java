@@ -6,25 +6,28 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+
+import com.conway.engine.rules.BandKernel.BandResult;
 import com.conway.model.ActiveRegion;
 import com.conway.model.Generation;
 
 /**
  * Computes successive generations of Conway's Game of Life.
  *
- * <p>The board is split into contiguous bands of rows. Each band writes only to its
- * own disjoint slice of the destination arrays, so no synchronisation is needed
- * between workers; {@link Future#get()} then supplies the happens-before edge that
- * makes every write visible to the thread that assembles the result.
+ * <p>This class owns the scheduling: it splits a generation into contiguous bands of rows,
+ * runs them on the executor it borrows, and assembles the result. What a band computes is
+ * {@link BandKernel}'s job, and how many bands to use is {@link PartitionPlanner}'s.
  *
- * <p>The calling thread computes one band itself rather than waiting for the pool to
- * compute all of them, so the degree of parallelism is unchanged but one hand-off per
- * generation is avoided.
+ * <p>Each band writes only its own disjoint slice of the destination arrays, so no
+ * synchronization is needed between workers; {@link Future#get()} then supplies the
+ * happens-before edge that makes every write visible to the thread that assembles the result.
  *
- * <p>Boundaries are dead: the grid does not wrap.
+ * <p>The calling thread computes one band itself rather than waiting for the pool to compute
+ * all of them, so the degree of parallelism is unchanged but one hand-off per generation is
+ * avoided.
  *
- * <p>This class is stateless apart from the executor it borrows, and is safe to call
- * from any thread. In practice it is only ever called from the simulation thread.
+ * <p>This class is stateless apart from the executor it borrows, and is safe to call from any
+ * thread. In practice, it is only ever called from the simulation thread.
  */
 public final class LifeRules {
 
@@ -37,108 +40,134 @@ public final class LifeRules {
     /**
      * Computes the generation following {@code current}.
      *
-     * <p>The result is identical for every value of {@code partitions}; the parameter
-     * only controls how the work is distributed.
+     * <p>The result is identical for every value of {@code partitions}; the parameter only
+     * controls how the work is distributed.
+     *
+     * <p>An empty board needs no special case: its single band skips rule evaluation but still
+     * carries the ever-alive flags forward, so trails survive the population reaching zero.
      *
      * @param partitions number of row bands to compute concurrently, clamped to
-     *                   {@code [1, height]}. A value of one is computed inline on the
-     *                   calling thread, giving an honest single-threaded baseline.
+     *                   {@code [1, height]} and capped by the active region
+     *                   ({@link PartitionPlanner#bandsFor}). A single band is computed inline
+     *                   on the calling thread, giving an honest single-threaded baseline.
      * @throws InterruptedException if the calling thread is interrupted while waiting
-     * @throws SimulationException  if a worker fails
+     * @throws SimulationException  if any band fails
      */
     public Generation next(Generation current, int partitions) throws InterruptedException {
         Objects.requireNonNull(current, "current");
 
-        final int width = current.width();
-        final int height = current.height();
-        final boolean[] src = current.aliveCells();
-        final boolean[] srcEver = current.everAliveCells();
-        final boolean[] dst = new boolean[src.length];
-        final boolean[] dstEver = new boolean[src.length];
-
+        int width = current.width();
+        int height = current.height();
+        boolean[] alive = new boolean[current.aliveCells().length];
+        boolean[] everAlive = new boolean[alive.length];
         ActiveRegion active = current.activeRegion().pad(width, height);
-        if (active.isEmpty()) {
-            // Nothing alive, so nothing to compute -- but the ever-alive flags are monotonic
-            // within a run and must be carried forward. Returning the freshly zeroed array
-            // here erased every trail the moment the population reached zero.
-            System.arraycopy(srcEver, 0, dstEver, 0, srcEver.length);
-            return Generation.adopt(width, height, dst, dstEver, current.number() + 1,
-                    ActiveRegion.EMPTY, 0);
-        }
+        BandKernel kernel = new BandKernel(current, alive, everAlive, active);
 
-        int bands = bandsFor(partitions, height, active);
-        BandResult[] bandResults = new BandResult[bands];
+        int bands = PartitionPlanner.bandsFor(partitions, height, active);
+        BandResult[] results = computeBands(kernel, boundaries(height, bands));
 
-        if (bands == 1) {
-            bandResults[0] = computeBand(src, srcEver, dst, dstEver, width, height, 0, height, active);
-        } else {
-            int baseSize = height / bands;
-            int remainder = height % bands;
-            int[] from = new int[bands];
-            int[] to = new int[bands];
-            int start = 0;
-            for (int i = 0; i < bands; i++) {
-                int size = baseSize + (i < remainder ? 1 : 0);
-                from[i] = start;
-                to[i] = start + size;
-                start = to[i];
-            }
-
-            // Dispatch every band but the first, then compute that one here rather than
-            // blocking for all of them. The calling thread is the simulation thread, which
-            // otherwise parks for the whole generation -- a wall-clock profile measured it
-            // blocked 88% of the time while the pool did the work. Running a band on it
-            // keeps the same degree of parallelism with one fewer hand-off per generation.
-            List<Future<BandResult>> futures = new ArrayList<>(bands - 1);
-            for (int i = 1; i < bands; i++) {
-                final int bandFrom = from[i];
-                final int bandTo = to[i];
-                futures.add(executor.submit(() ->
-                        computeBand(src, srcEver, dst, dstEver, width, height, bandFrom, bandTo, active)));
-            }
-
-            try {
-                bandResults[0] =
-                        computeBand(src, srcEver, dst, dstEver, width, height, from[0], to[0], active);
-            } catch (RuntimeException e) {
-                // Dispatched bands surface as ExecutionException below and are wrapped. This
-                // one runs on the calling thread, so without wrapping it would escape raw and
-                // a failure would report differently depending on which band hit it. The
-                // dispatched bands must not run to completion unseen: mark them cancelled so
-                // a failed generation does not leave wasted work behind.
-                cancelAll(futures);
-                throw new SimulationException("Generation computation failed", e);
-            }
-
-            for (int i = 1; i < bands; i++) {
-                try {
-                    // Future.get supplies the happens-before edge for the dispatched bands;
-                    // band zero was written by this thread, so its writes were already visible.
-                    // The Java 21 accessors (state(), resultNow(), exceptionNow()) cannot
-                    // replace this call: none of them waits, and there is nothing to read
-                    // until the task has actually been joined.
-                    bandResults[i] = futures.get(i - 1).get();
-                } catch (ExecutionException e) {
-                    // Whatever has not been joined yet is pure loss in a failed generation,
-                    // so cancel it rather than leaving it to finish unseen.
-                    cancelAll(futures.subList(i, futures.size()));
-                    throw new SimulationException("Generation computation failed", e.getCause());
-                }
-            }
-        }
-
-        ActiveRegion nextActive = ActiveRegion.EMPTY;
+        ActiveRegion region = ActiveRegion.EMPTY;
         int population = 0;
-        for (BandResult result : bandResults) {
-            nextActive = nextActive.merge(result.region());
+        for (BandResult result : results) {
+            region = region.merge(result.region());
             population += result.population();
         }
-
-        return Generation.adopt(width, height, dst, dstEver, current.number() + 1, nextActive, population);
+        // Ownership of both arrays passes to the new generation; nothing here touches them again.
+        return Generation.adopt(width, height, alive, everAlive, current.number() + 1, region, population);
     }
 
     /**
-     * Marks pending band futures as cancelled because a sibling band failed.
+     * Computes every band, returning the results in band order.
+     *
+     * <p>Every band but the first is dispatched, and the first is computed here rather than
+     * blocking for all of them. The calling thread is the simulation thread, which otherwise
+     * parks for the whole generation -- a wall-clock profile measured it blocked 88% of the
+     * time while the pool did the work. With a single band, nothing is dispatched at all.
+     *
+     * <p>However a generation fails, it escapes as a {@link SimulationException} whose cause is
+     * the band's own exception, so a failure reports the same way whichever band hit it. The
+     * bands still pending are canceled rather than left to run to completion unseen.
+     */
+    private BandResult[] computeBands(BandKernel kernel, int[] bounds) throws InterruptedException {
+        int bands = bounds.length - 1;
+        List<Future<BandResult>> futures = new ArrayList<>(bands - 1);
+        for (int i = 1; i < bands; i++) {
+            int from = bounds[i];
+            int to = bounds[i + 1];
+            futures.add(executor.submit(() -> kernel.computeBand(from, to)));
+        }
+
+        BandResult[] results = new BandResult[bands];
+        try {
+            results[0] = kernel.computeBand(bounds[0], bounds[1]);
+        } catch (RuntimeException e) {
+            cancelAll(futures);
+            throw new SimulationException("Generation computation failed", e);
+        }
+
+        joinDispatchedBands(bands, results, futures);
+        return results;
+    }
+
+    /**
+     * Joins the dispatched bands in band order, filling {@code results[1]} through
+     * {@code results[bands - 1]}.
+     *
+     * <p>{@code results[0]} was computed inline by the calling thread in {@link
+     * #computeBands}, so only bands {@code 1} through {@code bands - 1} are joined here.
+     * {@code futures.get(i - 1)} holds band {@code i}: band zero was never submitted, hence
+     * the off-by-one. With a single band there is nothing to join and the loop is a no-op.
+     *
+     * <p>{@link Future#get()} supplies the happens-before edge that makes each worker's
+     * writes to the destination arrays visible to the assembling thread; band zero needs no
+     * such edge because this thread wrote it itself. The Java 21 accessors ({@code state()},
+     * {@code resultNow()}, {@code exceptionNow()}) cannot replace this call: none of them
+     * waits, and there is nothing to read until the band has actually been joined.
+     *
+     * <p>A band failure escapes as a {@link SimulationException} whose cause is the band's
+     * own exception, matching the inline band in {@link #computeBands}, so a failure reports
+     * the same way whichever band hit it. The bands not yet joined are canceled via {@link
+     * #cancelAll} rather than left to run to completion unseen.
+     *
+     * @param bands   total band count; equals {@code results.length} and one more than
+     *                {@code futures.size()}
+     * @param results band results in band order; entry zero is already filled, entries
+     *                {@code 1} through {@code bands - 1} are written by this method
+     * @param futures dispatched bands {@code 1} through {@code bands - 1} in order, one
+     *                future per band
+     * @throws InterruptedException if the calling thread is interrupted while waiting
+     * @throws SimulationException  if any band fails
+     */
+    private static void joinDispatchedBands(int bands, BandResult[] results,
+                                            List<Future<BandResult>> futures) throws InterruptedException {
+        for (int i = 1; i < bands; i++) {
+            try {
+                results[i] = futures.get(i - 1).get();
+            } catch (ExecutionException e) {
+                // Whatever has not been joined yet is pure loss in a failed generation.
+                cancelAll(futures.subList(i, futures.size()));
+                throw new SimulationException("Generation computation failed", e.getCause());
+            }
+        }
+    }
+
+    /**
+     * Splits {@code height} rows into {@code bands} contiguous bands as evenly as possible.
+     * Band {@code i} covers rows {@code [bounds[i], bounds[i + 1])}, and the first
+     * {@code height % bands} bands take one extra row.
+     */
+    private static int[] boundaries(int height, int bands) {
+        int[] bounds = new int[bands + 1];
+        int baseSize = height / bands;
+        int remainder = height % bands;
+        for (int i = 0; i < bands; i++) {
+            bounds[i + 1] = bounds[i] + baseSize + (i < remainder ? 1 : 0);
+        }
+        return bounds;
+    }
+
+    /**
+     * Marks pending band futures as canceled because a sibling band failed.
      *
      * <p>Bands that already completed are no-ops: {@link Future#cancel(boolean)} on a done
      * task does nothing. The interrupt flag is best-effort &mdash; {@code computeBand} never
@@ -149,170 +178,5 @@ public final class LifeRules {
         for (Future<BandResult> future : futures) {
             future.cancel(true);
         }
-    }
-
-    /**
-     * How many bands to actually split this generation across.
-     *
-     * <p>The requested count is sized for the board, but the work in any one generation is
-     * bounded by the active region, which can be far smaller. Splitting work that is not
-     * there costs a task dispatch and a join per band and returns nothing: on a 201x201
-     * board holding a single blinker, sixteen bands ran 5.4 times slower than computing
-     * inline. So the requested count is also capped by how many bands the active rows can
-     * usefully fill.
-     *
-     * <p>The threshold is the same rows-per-band figure {@link PartitionPlanner} uses. That
-     * planner measured it against full boards, where the active region spans nearly
-     * everything; this applies the identical rule to the rows that actually carry work.
-     *
-     * <p>Purely a work-distribution choice: the resulting board is identical whatever this
-     * returns, which is what {@code PartitionEquivalenceTest} pins down.
-     */
-    static int bandsFor(int partitions, int height, ActiveRegion active) {
-        int requested = Math.clamp(partitions, 1, height);
-        if (active.isEmpty()) {
-            return 1;
-        }
-        int activeRows = active.maxRow() - active.minRow() + 1;
-        int useful = activeRows / PartitionPlanner.DEFAULT_MIN_ROWS_PER_PARTITION;
-        // Math.clamp requires min <= max, so a region too small to fill one band (useful == 0)
-        // must be floored to 1 before clamping.
-        return Math.clamp(requested, 1, Math.max(1, useful));
-    }
-
-    private static BandResult computeBand(boolean[] src, boolean[] srcEver,
-                                          boolean[] dst, boolean[] dstEver,
-                                          int width, int height, int fromRow, int toRow,
-                                          ActiveRegion activeLimit) {
-        int minRow = Integer.MAX_VALUE, maxRow = -1, minCol = Integer.MAX_VALUE, maxCol = -1;
-
-        int rowStart = Math.max(fromRow, activeLimit.minRow());
-        int rowEnd = Math.min(toRow, activeLimit.maxRow() + 1);
-
-        for (int row = rowStart; row < rowEnd; row++) {
-            int rowBase = row * width;
-            int colStart = activeLimit.minCol();
-            int colEnd = activeLimit.maxCol() + 1;
-
-            if (row > 0 && row < height - 1 && width > 2) {
-                int up = rowBase - width;
-                int down = rowBase + width;
-
-                if (colStart == 0) {
-                    dst[rowBase] = ruleAt(src, width, height, row, 0);
-                    if (dst[rowBase]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, 0);
-                        maxCol = Math.max(maxCol, 0);
-                    }
-                    colStart = 1;
-                }
-
-                int effectiveColEnd = Math.min(colEnd, width - 1);
-
-                for (int col = colStart; col < effectiveColEnd; col++) {
-                    int i = rowBase + col;
-                    int neighbours =
-                            (src[up + col - 1] ? 1 : 0)
-                                    + (src[up + col] ? 1 : 0)
-                                    + (src[up + col + 1] ? 1 : 0)
-                                    + (src[i - 1] ? 1 : 0)
-                                    + (src[i + 1] ? 1 : 0)
-                                    + (src[down + col - 1] ? 1 : 0)
-                                    + (src[down + col] ? 1 : 0)
-                                    + (src[down + col + 1] ? 1 : 0);
-                    dst[i] = src[i] ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, col);
-                        maxCol = Math.max(maxCol, col);
-                    }
-                }
-
-                if (colEnd == width) {
-                    int i = rowBase + width - 1;
-                    dst[i] = ruleAt(src, width, height, row, width - 1);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, width - 1);
-                        maxCol = Math.max(maxCol, width - 1);
-                    }
-                }
-            } else {
-                for (int col = colStart; col < colEnd; col++) {
-                    int i = rowBase + col;
-                    dst[i] = ruleAt(src, width, height, row, col);
-                    if (dst[i]) {
-                        minRow = Math.min(minRow, row);
-                        maxRow = Math.max(maxRow, row);
-                        minCol = Math.min(minCol, col);
-                        maxCol = Math.max(maxCol, col);
-                    }
-                }
-            }
-        }
-
-        // Carry the previous generation's ever-alive flags forward and mark the cells that
-        // newly qualify, fused into one pass per row so the row is still in cache for the
-        // second half.
-        //
-        // The OR sweeps the full width even though dst can only be true inside the active
-        // region, so on a sparse board most of it is provably redundant. Narrowing it was
-        // tried three ways -- bounding the columns, splitting copy and OR into separate
-        // passes, and folding the marks into the rule loop above -- and every one of them
-        // cost 2-5% on a dense board while only speeding up boards that were already taking
-        // under 50us a generation. The redundancy is deliberate: it buys sequential access
-        // over a contiguous row, which is worth more than the work it skips. See
-        // docs/profiling-issues-fixing-progress.md.
-        //
-        // The population count is folded into this same pass: it already visits every cell
-        // of the band, so counting dst here costs nothing extra and spares the status bar
-        // an O(board) scan per frame.
-        int population = 0;
-        for (int row = fromRow; row < toRow; row++) {
-            int rowBase = row * width;
-            System.arraycopy(srcEver, rowBase, dstEver, rowBase, width);
-            for (int col = 0; col < width; col++) {
-                int i = rowBase + col;
-                dstEver[i] |= dst[i];
-                if (dst[i]) {
-                    population++;
-                }
-            }
-        }
-
-        return new BandResult(new ActiveRegion(minRow, maxRow, minCol, maxCol), population);
-    }
-
-    /** Bounds-checked rule evaluation, used for cells on the border of the board. */
-    private static boolean ruleAt(boolean[] src, int width, int height, int row, int col) {
-        int neighbours = 0;
-        int rowStart = Math.max(0, row - 1);
-        int rowEnd = Math.min(height - 1, row + 1);
-        int colStart = Math.max(0, col - 1);
-        int colEnd = Math.min(width - 1, col + 1);
-
-        for (int r = rowStart; r <= rowEnd; r++) {
-            int base = r * width;
-            for (int c = colStart; c <= colEnd; c++) {
-                if ((r != row || c != col) && src[base + c]) {
-                    neighbours++;
-                }
-            }
-        }
-        boolean alive = src[row * width + col];
-        return alive ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
-    }
-
-    /**
-     * What one band computed: the active region of its slice of the destination board,
-     * and the number of live cells it wrote. The population is summed across bands by
-     * {@link #next} and handed to {@link Generation#adopt} so the snapshot carries the
-     * count without a second scan.
-     */
-    private record BandResult(ActiveRegion region, int population) {
     }
 }

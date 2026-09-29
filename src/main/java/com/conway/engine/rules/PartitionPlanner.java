@@ -100,9 +100,9 @@ public final class PartitionPlanner {
      * <p>The requested count is sized for the board, but the work in any one generation is
      * bounded by the active region, which can be far smaller. Splitting work that is not
      * there costs a task dispatch and a join per band and returns nothing: on a 201x201
-     * board holding a single blinker, sixteen bands ran 5.4 times slower than computing
-     * inline. So the request is also capped by how many bands the active rows can usefully
-     * fill.
+     * board holding a single blinker, sixteen bands ran about six times slower than
+     * computing inline (52.1 us a generation against 8.5). So the request is also capped by
+     * how many bands the active rows can usefully fill.
      *
      * <p>The threshold is the one {@link #recommend} uses. That was measured against full
      * boards, where the active region spans nearly everything; this applies the identical

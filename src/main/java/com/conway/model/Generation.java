@@ -21,8 +21,9 @@ import java.util.Arrays;
  * </ul>
  *
  * <p>Both are stored as flat {@code boolean[]} indexed {@code row * width + col}
- * rather than as {@code Boolean[][]}, which removes ~40k object headers per board
- * and gives the rules engine sequential memory access.
+ * rather than as the original {@code Boolean[][]}, which stores one byte per cell instead
+ * of a reference, drops the per-row arrays and the possibility of a {@code null} cell, and
+ * gives the rules engine sequential memory access.
  *
  * <p>The population is maintained as a field rather than recomputed on demand. The
  * status bar reads it at the repaint rate (60 fps), and a scan of the whole board
@@ -170,7 +171,7 @@ public final class Generation {
         return everAlive[row * width + col];
     }
 
-    /** Number of currently alive cells. Maintained incrementally; O(1). */
+    /** Number of currently alive cells. Fixed when the generation is built; O(1). */
     public int population() {
         return population;
     }

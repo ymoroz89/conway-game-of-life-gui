@@ -121,7 +121,7 @@ class BoardViewTest {
     @Test
     @DisplayName("The board keeps its aspect ratio and centers itself in a non-square component")
     void boardIsLetterboxedRatherThanStretched() {
-        // Maximising the window used to stretch a square board across the full width,
+        // Maximizing the window used to stretch a square board across the full width,
         // making cells rectangular and skewing the diagonals the simulation produces.
         view.setSize(400, 200);
 

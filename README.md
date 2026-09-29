@@ -115,7 +115,7 @@ its range, is ignored with a logged warning and the default is used instead.
 | `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | 1–`gridSize` | Upper bound for the partition control. The band workers' parallelism is `min(maxPartitions, cores)` |
 | `conway.partitions` | `clamp(gridSize / minRowsPerPartition, 1, maxPartitions)` | 1–`maxPartitions` | Partition count for the startup board; overrides the recommendation |
 | `conway.minRowsPerPartition` | `50` | 1–`gridSize` | Rows a band needs before splitting again pays off. Retunes the startup recommendation only ([why](#how-the-default-partition-count-is-chosen)) |
-| `conway.log.dir` | `logs` | — | Directory for `conway-life.log`, rolled daily and at 10 MB, with 14 days kept |
+| `conway.log.dir` | `logs` | — | Directory for `conway-life.log`, rolled daily and at 10 MB, with 14 days and at most 200 MB kept |
 | `conway.log.level` | `INFO` | — | Root log level |
 
 ```bash
@@ -494,11 +494,11 @@ The load-bearing test is
 Partitioning is a work-distribution concern, so the resulting board must not depend on how
 many bands the work was split into. The test runs every band count from 2 to 8 on a
 401×401 random board, and six bands on a non-square board 131 cells wide and 307 tall,
-comparing each generation with the single-threaded result. That catches off-by-one errors at band
-boundaries, rows computed twice or skipped, and accidental sharing of mutable state
-between workers. Each case first asserts that the band count it asked for is the one that
-actually runs, so the test cannot quietly degrade into comparing the inline path with
-itself.
+comparing each generation with the single-threaded result, on the same kind of dedicated
+`ForkJoinPool` the engine uses. That catches off-by-one errors at band boundaries, rows
+computed twice or skipped, and accidental sharing of mutable state between workers. Each
+of those cases first asserts that the band count it asked for is the one that actually
+runs, so the test cannot quietly degrade into comparing the inline path with itself.
 
 | Suite | Pins down |
 | --- | --- |
@@ -506,7 +506,7 @@ itself.
 | `LifeRulesTest` | The rules: still lifes, oscillators, gliders, dead borders, trails, population counts, band-failure reporting |
 | `BandCapTest` | The per-generation band cap follows the rows that carry work |
 | `PartitionPlannerTest` | The planner reproduces each board's measured optimum and respects the hardware cap |
-| `SimulationEngineTest` | Queued steps are never dropped; start, pause, clear and edits during a run; held snapshots never change; `close()` is idempotent |
+| `SimulationEngineTest` | Queued steps are never dropped; start, pause, clear and edits during a run; held snapshots never change; `close()` stops the virtual simulation thread and is idempotent |
 | `BoardViewTest`, `CellGeometryTest` | Incremental rendering matches a full redraw; letterboxing; pointer-to-cell mapping |
 | `GenerationTest`, `PatternTest`, `PatternLoaderTest`, `BoardSizeOptionTest`, `MainSeedingTest` | The immutable model, `.cells` parsing, board-size presets and the startup seed |
 
@@ -521,7 +521,8 @@ java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
 Arguments, all optional: grid size (default 201), generations per measurement (default
 300), and the executor — `platform` (the default), `virtual`, or `forkjoin`. The harness
 seeds the same two-gun board the application starts with, and measures partition counts
-1, 2, 4, 8 and so on, doubling up to `min(gridSize, 2 × cores)`, plus that maximum itself.
+1, 2, 4, 8 and so on, doubling up to the application's own default cap,
+`min(gridSize, max(2, 2 × cores))`, plus that maximum itself.
 
 The default executor is **not** the path the application takes. `SimulationEngine` uses a
 `ForkJoinPool`, while the harness defaults to a fixed platform pool, so measure the
@@ -667,7 +668,8 @@ What counts is how many rows the live cells span, not how many live cells there 
 board whose live cells span fewer than 100 rows once padded is capped to a single band,
 while the default seed, sparse as it is, spans all 201 rows and runs four. The cap exists
 because splitting work that is not there is pure overhead: on a 201×201 grid holding a
-single blinker, sixteen bands ran 5.4 times slower than computing inline.
+single blinker, sixteen bands ran about six times slower than computing inline — 52.1 µs a
+generation against 8.5.
 
 It also explains the benchmark tables above. A full board caps at four bands at 201,
 eight at 401 and sixteen at 801, so in each row of the partition table every column at or

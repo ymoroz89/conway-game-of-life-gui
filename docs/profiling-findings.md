@@ -212,7 +212,7 @@ separate barrier wait from CPU without needing a correlated thread dump.
 
 ### P2-5 — `Generation.population()` runs an O(n) scan every frame
 
-2,140 calls totalling 42.9 ms, driving the status bar via `LifeFrame.refresh()`. At 40,401
+2,140 calls totaling 42.9 ms, driving the status bar via `LifeFrame.refresh()`. At 40,401
 cells and 60 fps that is ~2.4 M boolean reads per second. Negligible in absolute terms today,
 but it is redundant: the engine could maintain the count incrementally as generations are
 produced.

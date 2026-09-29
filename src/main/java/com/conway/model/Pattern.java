@@ -10,7 +10,7 @@ import java.util.Objects;
  * <p>Patterns are data, not code: they are parsed from the widely used plaintext
  * {@code .cells} format rather than hard-coded as index assignments, so adding a
  * pattern means adding a resource file and does not require touching the board or
- * the container.
+ * the engine.
  */
 public final class Pattern {
 

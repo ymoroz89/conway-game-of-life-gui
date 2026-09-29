@@ -45,7 +45,8 @@ class BandCapTest {
     @DisplayName("A sparse board on a large grid is computed inline rather than split")
     void sparseBoardRunsInline() {
         // The case that regressed: the partition count is sized for an 801-row board, but a
-        // blinker occupies five rows. Sixteen bands there ran 5.4x slower than inline.
+        // blinker occupies five rows. Sixteen bands there ran 1.3x slower than inline, and
+        // on a 201-row board about 6x slower (52.1 us a generation against 8.5).
         assertEquals(1, PartitionPlanner.bandsFor(16, 801, spanning(5)));
     }
 

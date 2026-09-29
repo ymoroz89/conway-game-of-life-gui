@@ -9,6 +9,7 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 
 import com.conway.engine.rules.LifeRules;
+import com.conway.engine.rules.PartitionPlanner;
 import com.conway.model.Generation;
 import com.conway.model.Pattern;
 import com.conway.model.PatternLoader;
@@ -63,7 +64,8 @@ public final class GenerationBenchmark {
         int generations = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_GENERATIONS;
         String mode = args.length > 2 ? args[2] : "platform";
         int cores = Runtime.getRuntime().availableProcessors();
-        int maxPartitions = Math.min(gridSize, cores * 2);
+        // The same cap the application gives conway.maxPartitions by default.
+        int maxPartitions = PartitionPlanner.hardwareCap(gridSize);
 
         System.out.printf(Locale.ROOT,
                 "Board %dx%d, %d generations per measurement, best of %d, %d available processors, %s executor%n%n",

@@ -173,10 +173,11 @@ final class BandKernel {
      * <p>The copy and the marking are fused into one pass per row so the row is still in
      * cache for the second half. The OR sweeps the full width even though {@code dst} can
      * only be true inside the active region, so on a sparse board most of it is provably
-     * redundant. Narrowing it was tried three ways -- bounding the columns, splitting copy
-     * and OR into separate passes, and folding the marks into the rule loops above -- and
-     * every one of them cost 2-5% on a dense board while only speeding up boards that were
-     * already taking under 50us a generation. The redundancy is deliberate: it buys
+     * redundant. Narrowing it was tried four ways -- cloning the old flags and marking inside
+     * the rule loops above, hoisting a per-band copy ahead of them, splitting copy and OR
+     * into separate passes, and bounding the fused pass to the active rows and columns --
+     * and every one of them cost 2-6% on a dense board while only speeding up boards that
+     * were already taking under 50us a generation. The redundancy is deliberate: it buys
      * sequential access over a contiguous row, which is worth more than the work it skips.
      * See docs/profiling-issues-fixing-progress.md.
      *

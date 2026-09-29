@@ -480,7 +480,7 @@ simulation thread and the renderer. **The measured cost does not justify touchin
 167 ms across 60 s, 0.28%.
 
 While in that code the redundant `everAlive` pass looked like an easy win — the tail sweeps
-the full width of every row, though `dst` can only be true inside the active region. Three
+the full width of every row, though `dst` can only be true inside the active region. Four
 variants were implemented and benchmarked against an interleaved A/B (two rounds, three JVMs
 each, alternating builds to cancel thermal drift):
 
@@ -625,7 +625,7 @@ few percent more — not a multiple.
 | Option | Addresses | Cost / risk |
 | --- | --- | --- |
 | **`Phaser` with persistent band loops** | The remaining hand-offs | Workers become engine-owned rather than a shared pool, so `setPartitions` turns from a cheap command into a reconfiguration, and pausing must be handled explicitly or the spin phase burns CPU while idle. Safety is preserved: `arriveAndAwaitAdvance` gives the same happens-before edge |
-| **Finer bands** | Imbalance | Now known to be worth 5–19% at most, and `bandsFor` caps band count because more bands measured 5.4× slower on a sparse board. Not worth pursuing |
+| **Finer bands** | Imbalance | Now known to be worth 5–19% at most, and `bandsFor` caps band count because more bands measured about 6× slower on a sparse board. Not worth pursuing |
 | **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent. **Later adopted in its cheap form** (2026-09-24): a `ForkJoinPool` as the executor behind the unchanged band model, measured 12–19% faster at 201×201 with four partitions. The rewrite described here stays rejected |
 
 **Recommendation: stop here.** The cheap, low-risk part is done. What is left is a few percent

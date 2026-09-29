@@ -183,7 +183,7 @@ public final class BoardView extends JPanel {
      * ratio that fits the component, centered, with any leftover space left as margin.
      *
      * <p>Stretching to the component bounds instead would make cells non-square whenever
-     * the window is not square &mdash; maximising the window turned a 201x201 board into a
+     * the window is not square &mdash; maximizing the window turned a 201x201 board into a
      * wide grid of rectangles and skewed the diagonals the simulation produces.
      *
      * <p>The image dimensions are physical pixels, but the viewport is in logical

@@ -136,7 +136,7 @@ class GenerationTest {
     }
 
     @Test
-    @DisplayName("withCell maintains the population incrementally")
+    @DisplayName("withCell keeps the population in step with the board")
     void withCellMaintainsPopulation() {
         Generation board = Generation.empty(3, 3);
 

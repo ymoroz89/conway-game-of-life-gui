@@ -26,9 +26,10 @@ import com.conway.model.Pattern;
  * <h2>Threading model</h2>
  * The engine is a single-writer actor. Exactly one thread &mdash; the simulation
  * thread created in the constructor &mdash; ever mutates simulation state. Every
- * mutating method does nothing but validate its arguments and enqueue a {@link Command};
- * the reads return published {@code volatile} fields; only {@link #sync} and
- * {@link #close} block. Nothing outside this class touches the board.
+ * mutating method does nothing beyond validating or clamping its arguments and enqueueing
+ * a {@link Command}; the reads return published {@code volatile} fields or values fixed at
+ * construction; only {@link #sync} and {@link #close} block. Nothing outside this class
+ * touches the board.
  *
  * <p>The board and its statistics are handed to readers as one immutable
  * {@link EngineSnapshot} published through a single {@code volatile} field. A reader
@@ -149,7 +150,7 @@ public final class SimulationEngine implements AutoCloseable {
         // Parallelism is the core count, never the partition count: stealing redistributes
         // work, so unlike the old ThreadPoolExecutor there is nothing to resize when the
         // partition control moves. Capped by maxPartitions so a tiny board does not start
-        // more carriers than it can ever use. Daemon by default, as before.
+        // more workers than it can ever use. Daemon by default, as before.
         this.workers = new ForkJoinPool(
                 Math.min(maxPartitions, Runtime.getRuntime().availableProcessors()));
 

@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -31,8 +31,12 @@ import com.conway.model.Generation;
  * <p>The boards must be tall enough to be split at all. {@link LifeRules} only runs a band
  * per {@link PartitionPlanner#DEFAULT_MIN_ROWS_PER_PARTITION} active rows, so a board under
  * 100 rows computes every request as one inline band and this test would compare the
- * single-threaded path with itself. Each parameterised case therefore asserts the band
+ * single-threaded path with itself. Each parameterized case therefore asserts the band
  * count it expects before comparing boards.
+ *
+ * <p>The bands run on a dedicated {@link ForkJoinPool}, the executor
+ * {@code SimulationEngine} ships with, so the safety net covers the path the application
+ * actually takes.
  */
 class PartitionEquivalenceTest {
 
@@ -47,14 +51,14 @@ class PartitionEquivalenceTest {
 
     @BeforeAll
     static void setUp() {
-        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
-        // down and waits for it to terminate, replacing the manual shutdown block.
-        executor = Executors.newFixedThreadPool(8);
+        executor = new ForkJoinPool(MAX_BANDS);
         rules = new LifeRules(executor);
     }
 
     @AfterAll
     static void tearDown() {
+        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
+        // down and waits for it to terminate, replacing the manual shutdown block.
         executor.close();
     }
 

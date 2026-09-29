@@ -6,7 +6,7 @@ import org.slf4j.LoggerFactory;
 import com.conway.engine.rules.PartitionPlanner;
 
 /**
- * Externalised application settings.
+ * Externalized application settings.
  *
  * <p>Every value that used to be a compile-time constant scattered across the UI,
  * the controller and the board lives here and can be overridden with a system

@@ -12,7 +12,9 @@ import java.util.concurrent.TimeUnit;
  * @param generation      total generations computed since the last clear
  * @param generationsInRun generations computed since the run started
  * @param elapsedNanos    nanoseconds elapsed since the run started
- * @param partitions      number of row bands used for the most recent generation
+ * @param partitions      partition count requested for the most recent generation; the engine
+ *                        runs fewer bands when the live cells span too few rows to fill them
+ *                        ({@code PartitionPlanner.bandsFor})
  */
 public record SimulationStats(long generation, long generationsInRun, long elapsedNanos, int partitions) {
 

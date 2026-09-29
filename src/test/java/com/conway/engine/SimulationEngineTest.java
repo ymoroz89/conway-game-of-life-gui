@@ -3,6 +3,7 @@ package com.conway.engine;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
@@ -64,7 +66,7 @@ class SimulationEngineTest {
     void queuedStepsAreAllHonored() throws Exception {
         // The previous wait/notify design silently discarded a step request whenever
         // the controller thread was not already parked in wait(). Because commands are
-        // queued rather than signalled, every request must be applied exactly once.
+        // queued rather than signaled, every request must be applied exactly once.
         int steps = 200;
         for (int i = 0; i < steps; i++) {
             engine.step();
@@ -274,14 +276,31 @@ class SimulationEngineTest {
     @Timeout(30)
     @DisplayName("Close stops the simulation thread and is idempotent")
     void closeIsIdempotent() throws Exception {
+        // Thread.getAllStackTraces() never lists virtual threads, so the simulation thread
+        // cannot be looked up by name. A state callback runs on the thread that caused the
+        // change, and RUNNING is always raised by the simulation thread itself.
+        AtomicReference<Thread> simulationThread = new AtomicReference<>();
+        engine.addListener(new EngineListener() {
+            @Override
+            public void onStateChanged(SimulationEngine.State state) {
+                if (state == SimulationEngine.State.RUNNING) {
+                    simulationThread.set(Thread.currentThread());
+                }
+            }
+        });
         engine.start();
         await(() -> engine.currentGeneration().number() > 5L);
+
+        Thread thread = simulationThread.get();
+        assertNotNull(thread, "RUNNING was never reported");
+        assertEquals("conway-simulation", thread.getName());
+        assertTrue(thread.isVirtual(), "The simulation thread should be a virtual thread");
 
         engine.close();
         engine.close();
 
         assertEquals(SimulationEngine.State.STOPPED, engine.state());
-        assertFalse(threadIsAlive("conway-simulation"), "The simulation thread outlived close()");
+        assertFalse(thread.isAlive(), "The simulation thread outlived close()");
     }
 
     @Test
@@ -349,11 +368,6 @@ class SimulationEngineTest {
             target.step();
         }
         target.sync(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
-    }
-
-    private static boolean threadIsAlive(String name) {
-        return Thread.getAllStackTraces().keySet().stream()
-                .anyMatch(thread -> thread.getName().equals(name) && thread.isAlive());
     }
 
     private static void await(BooleanSupplier condition) throws InterruptedException {

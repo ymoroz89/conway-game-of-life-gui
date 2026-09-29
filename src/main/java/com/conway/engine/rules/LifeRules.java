@@ -120,7 +120,7 @@ public final class LifeRules {
      *
      * <p>{@link Future#get()} supplies the happens-before edge that makes each worker's
      * writes to the destination arrays visible to the assembling thread; band zero needs no
-     * such edge because this thread wrote it itself. The Java 21 accessors ({@code state()},
+     * such edge because this thread wrote it itself. The Java 19 accessors ({@code state()},
      * {@code resultNow()}, {@code exceptionNow()}) cannot replace this call: none of them
      * waits, and there is nothing to read until the band has actually been joined.
      *

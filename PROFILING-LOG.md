@@ -574,3 +574,119 @@ claim is withdrawn. Median pause is consistently lower on 25 (0.43–0.44 vs
   Java 21 is ~3% faster in the actual GUI app. Both replicate.
 - **Allocation: identical**, ~82–83 KB per generation, 98.9% of it `[Z`, on every run.
 - **Pause tails: no reliable difference** at n=2.
+
+> **The GUI throughput conclusion above does not survive a noise floor.** See
+> [2026-09-30](#2026-09-30--an-aa-noise-floor-and-a-234-executor-regression): an A/A test
+> on this machine and workload produced a **+1.71%** difference between two arms that are
+> identical by construction, with a 4.70% full spread. The "Java 21 is ~3% faster in the
+> GUI" claim sits inside that floor and is withdrawn. The memory and allocation
+> conclusions are unaffected — those effects are ~50% and ~0.1%, far outside it.
+
+## 2026-09-30 — an A/A noise floor, and a 23.4% executor regression
+
+Rig rebuilt, a determinism gate added, and a measurement that turns out to matter more
+than the JDK question that prompted it. Workload throughout: `drive.GuiDrive 2000000 3`,
+`ENV=gui` (window, EDT, incremental repaint), 5 reps per arm interleaved by repetition,
+JDK identity verified per arm. Raw data was written to `profiling/run-2M-20260930-*/` and
+is **gitignored**, so the numbers below are the record.
+
+### The rig had been lost again, and the gate was never real
+
+`tools/bench/` was empty — second loss, same cause: it was never committed. Recovered
+from `df5b6ae` on `java27`; one import had gone stale (`SimulationSeeder` moved to
+`com.conway.engine.support`). `shared-r21.jar` was rebuilt from current `main`, because the
+committed jar was the pre-`ForkJoinPool` engine and would have measured code that no longer
+exists. Driver sources are now in tree (`b821e72`) with `*.conf.example` templates, so the
+invocation survives even though the live configs stay local.
+
+`drive.GateCheck` is new, and closes a real hole: **every prior round's "determinism gate"
+compared generation counts**, which varied 2,000,143–2,000,311 because a free-running engine
+stops on the first snapshot at or past target. Matching counts never proved matching work.
+GateCheck calls `LifeRules.next()` synchronously for an exact step count and hashes the
+board. At 50,000 steps both JDKs agree exactly — seed population 72 / aliveHash
+−1511641660, final population 346 / aliveHash −183858688 / everAliveHash −1980827136.
+
+### The A/A floor: this design fabricates 1.71%
+
+Two arms, same JDK (21.0.12.1), sha256-identical jar, same branch. True difference is zero.
+
+| Arm | median gen/s | range | spread |
+|---|---|---|---|
+| `21a` | 16,941.9 | 16,601.9–17,382.3 | 4.70% |
+| `21b` | 17,231.9 | 16,959.0–17,375.4 | 2.46% |
+| **false delta** | **+1.71%** | | |
+
+All ten runs: 16,602 · 16,723 · 16,942 · 16,959 · 17,144 · 17,232 · 17,250 · 17,329 ·
+17,375 · 17,382. Median 17,187.8, full spread 4.70%, stdev 1.61% of mean.
+
+**Consequence: no throughput claim below ~3% in this environment means anything at n=5**,
+and that retroactively covers every 21-vs-25 throughput figure this project has produced —
+including this document's ~3% GUI result. At stdev 1.6%, n=5 resolves roughly 3%+, n=10
+about 2%, and resolving 1% would need ~40 reps per arm. Not worth buying.
+
+The focus markers failed to predict again: the only two runs ending focused were 16,959 and
+16,942 — among the *slowest* — while the fastest two ended unfocused. Third time this gate
+has shown no correlation. Treat it as provenance, never as grounds for discarding a run.
+
+### `ForkJoinPool` costs 23.4% against virtual threads
+
+One JDK (21.0.12.1), one commit (`13fc868`), one line different, artifacts staged per arm,
+interleaved, no JVM options. The two worktrees were diffed to confirm the only change was
+the executor construction plus its import, and the built jars were checked to actually
+differ in bytecode — a config that silently builds the same thing twice is the obvious way
+for this test to lie.
+
+| Arm | Band dispatch | median gen/s | range | all five |
+|---|---|---|---|---|
+| `fj` | `new ForkJoinPool(min(maxPartitions, cores))` | **17,058.7** | 15,935.3–17,652.1 | 15,935 · 16,872 · 17,059 · 17,500 · 17,652 |
+| `vt` | `Executors.newVirtualThreadPerTaskExecutor()` | **22,282.8** | 20,070.5–22,605.9 | 20,070 · 21,891 · 22,283 · 22,511 · 22,606 |
+
+**`vt` is +30.62% faster; `ForkJoinPool` is −23.44%.** Every `vt` run beat every `fj` run —
+complete separation, roughly 18× the A/A floor. This is the largest effect ever measured on
+this workload, and the only one here that is unambiguously actionable: reverting one line in
+`SimulationEngine` is worth ~23% throughput in the shipping app.
+
+**It also inverts README's executor table.** `GenerationBenchmark` measures forkjoin *ahead*
+of virtual at 201/4 partitions (19,473 vs 17,422). In the GUI the ordering reverses and the
+margin is larger. A prediction was recorded before the run that if the README held, `vt`
+would come back slower; it came back 30% faster. So the harness and the shipping
+application disagree about which executor is faster, in opposite directions — and the
+executor currently in `main` was chosen on the harness's evidence.
+
+**Mechanism: hypothesis only, not measured.** The simulation thread is itself a virtual
+thread that submits bands and blocks on `Future.get()`. With a virtual-thread-per-task
+executor the bands are virtual threads too and the blocking composes; with a dedicated
+`ForkJoinPool` a virtual thread submits externally and then blocks on an FJP `Future`, a
+path where carrier pinning and poor blocking compensation are plausible. C1 carries no JFR,
+so there is no evidence either way yet. The test that would settle it is C3
+(`settings=profile`) on both arms, reading `virtual_thread_pinned_count` — 0 in the
+virtual-thread rounds of 2026-09-18.
+
+**Two caveats.** Within-arm spreads this round (10.77% and 12.63%) were wider than the A/A
+floor measured an hour earlier, so the machine was noisier than the floor suggests; the
+separation is total regardless, but the medians carry more uncertainty than ±1.7%. And this
+isolates the executor on *current* `main` only — it does not re-test the rest of the
+37-file refactor between `f17e236` and `13fc868`, which remains unmeasured.
+
+### An unexplained cross-session gap, and what is NOT claimed here
+
+`vt`'s 22,282.8 lands within +1.8% of the 21,884 measured on 2026-09-18's virtual-thread
+engine — inside the A/A false delta. Two sessions agreeing on the virtual-thread level,
+with `fj` 23% below both, is suggestive. But **that 2026-09-18 figure cannot be verified**:
+its artifacts were deleted, and cross-session comparison is the one thing this method
+forbids most firmly. It is recorded as corroboration, not evidence.
+
+Also unrecorded by necessity: the 2026-09-18 pinned-heap round (C2/C4 at `-Xms1g -Xmx1g
+-XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=40`), which found the +60% total-pause
+gap between 21 and 25 vanished at equal eden — 267 collections against 266. Its data and its
+log entry were both lost when the branch moved, and it is not re-derivable. The method
+lesson is in `.gitignore` now: write the numbers into the entry while the data is still on
+disk.
+
+### Standing next steps
+
+1. **Revert the executor**, or justify keeping it against a 23.4% measured cost.
+2. **C3 on `fj` vs `vt`** to settle the pinning hypothesis (~20 min, 10 runs).
+3. **The 21-vs-25 matrix is still unrun** at 2M on the current engine. Worth running for
+   the memory and GC rows, which clear the floor by 30×; its throughput row can only ever
+   be a bound, not a measurement.

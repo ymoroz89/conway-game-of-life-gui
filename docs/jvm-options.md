@@ -198,10 +198,12 @@ regenerate it after changing either.
   of a fixed `-Xmx`. Its predecessor `-XX:MaxRAMFraction` fails on JDK 25.
 - **`-XX:ActiveProcessorCount`** matters more here than in most applications, because the
   code reads `availableProcessors()` to decide how to split the board:
-  `PartitionPlanner.hardwareCap` caps partitions at `min(rows, max(2, 2 × cores))`, and
-  `SimulationEngine` sizes its `ForkJoinPool` at `min(maxPartitions, cores)`. The CPU
-  count the JVM reports therefore sets both. Pin it to the CPUs the container is
-  actually given.
+  `PartitionPlanner.hardwareCap` caps partitions at `min(rows, max(2, 2 × cores))`, and the
+  bands run as virtual threads on the JDK's virtual-thread scheduler, whose parallelism is
+  the reported CPU count unless `-Djdk.virtualThreadScheduler.parallelism` overrides it.
+  The CPU count the JVM reports therefore sets both. Pin it to the CPUs the container is
+  actually given. (From 2026-09-24 to 2026-10-01 the bands ran on a `ForkJoinPool` that
+  `SimulationEngine` sized at `min(maxPartitions, cores)` instead.)
 
 This case mostly concerns the headless benchmark; the GUI needs a display.
 

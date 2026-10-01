@@ -15,8 +15,10 @@ import com.conway.model.Generation;
  * of the live cells cannot come alive, and the destination arrays are fresh, so those cells
  * are already dead.
  *
- * <p>Pure CPU: it never blocks, which is why the band workers are a {@code ForkJoinPool}
- * rather than virtual threads. Boundaries are dead: the grid does not wrap.
+ * <p>Pure CPU: it never blocks. The band workers are virtual threads all the same, because
+ * the thread that waits on them is one, and sharing its scheduler keeps each generation's
+ * hand-off cheap &mdash; see {@code SimulationEngine}. Boundaries are dead: the grid does not
+ * wrap.
  *
  * <p>The per-cell loops take the band's arrays and dimensions as parameters or locals and
  * never read a field, so a loop body never reloads {@code this}.

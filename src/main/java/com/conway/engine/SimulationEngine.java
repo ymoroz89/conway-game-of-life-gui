@@ -6,7 +6,7 @@ import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -60,28 +60,41 @@ import com.conway.model.Pattern;
  * costs nothing while idle. Virtual threads are daemon by
  * default, so the JVM can still exit if a shutdown path is missed.
  *
- * <p>The band workers are a <em>{@link ForkJoinPool}</em>, because the work is pure CPU
- * that never blocks — the case virtual threads do not address. Two properties earn it:
+ * <p>The band workers are a <em>virtual-thread-per-task</em> executor, and that follows
+ * from the paragraph above: the thread that dispatches the bands and then waits on them is
+ * virtual, so the bands run on the same scheduler it does. The work is pure CPU, which is
+ * not what virtual threads are usually for, but on the default board the cost that
+ * dominates is the hand-off, not the band: a band is about 10,000 cells, and three are
+ * dispatched per generation, tens of thousands of times a second. On one scheduler the
+ * hand-off stays cheap:
  *
  * <ul>
- *   <li><strong>Work stealing.</strong> Bands are uneven, since {@code computeBand} clips
- *       rule evaluation to the active region, and the cores are asymmetric (performance
- *       plus efficiency). A generation ends at a barrier, so the slowest band sets the
- *       pace; stealing lets a core that finishes early absorb the rest instead of idling.
- *   <li><strong>Cheaper hand-off.</strong> Per-worker deques avoid the single contended
- *       queue of a fixed pool, which matters at 50,000&ndash;60,000 band dispatches a
- *       second on the default board.
+ *   <li><strong>The waiter's carrier is reused.</strong> When the simulation thread blocks
+ *       in {@code Future.get()} it unmounts, and its carrier is free in the same pool as
+ *       the bands, so it can run one instead of idling.
+ *   <li><strong>The wake-up is local.</strong> A band that finishes unparks the simulation
+ *       thread from its own carrier: {@code VirtualThread.unpark} switches to the carrier
+ *       before resubmitting, so the resubmission lands on that carrier's local deque rather
+ *       than in an external submission queue.
+ *   <li><strong>Work stealing is kept.</strong> The virtual-thread scheduler is itself a
+ *       work-stealing {@code ForkJoinPool}, so uneven bands &mdash; {@code computeBand} clips
+ *       rule evaluation to the active region &mdash; and asymmetric cores are still absorbed.
  * </ul>
  *
- * <p>Measured with {@code GenerationBenchmark}'s three executor modes, interleaved: on the
- * default 201 board this is 12–19% faster than virtual threads at the recommended
- * partition count, and on an 801 board all three modes land within noise, where bands are
- * large enough that dispatch cost stops mattering.
+ * <p>A dedicated {@code ForkJoinPool} was tried and measured <strong>23% slower in the
+ * application</strong>: 17,059 against 22,283 generations/s (medians of five interleaved
+ * runs each, 2,000,000 generations in the GUI on JDK 21, no overlap between the arms). It
+ * puts the bands on a second scheduler, so every generation crosses between two pools in
+ * both directions. {@code GenerationBenchmark} reports the opposite ordering, and that is
+ * a trap: it calls {@code next()} from {@code main}, a platform thread, and with a platform
+ * caller neither executor shares a scheduler with the waiter. An executor for this class
+ * has to be chosen with the caller the application actually has &mdash; see the README's
+ * "Choosing the executor".
  *
- * <p>Crucially this does <em>not</em> bring back the {@code ThreadPoolExecutor} sizing
- * apparatus that the Java 21 migration deleted. Parallelism is fixed at construction as
- * {@code min(maxPartitions, cores)} and never tracks the partition count, so there is still
- * no core size to keep in sync, no keepalive and no thread factory.
+ * <p>Like the {@code ForkJoinPool} before it, this keeps none of the
+ * {@code ThreadPoolExecutor} sizing apparatus that the Java 21 migration deleted: no core
+ * size, no keepalive, no thread factory, and nothing to resize when the partition control
+ * moves.
  */
 public final class SimulationEngine implements AutoCloseable {
 
@@ -147,18 +160,18 @@ public final class SimulationEngine implements AutoCloseable {
         this.snapshot = EngineSnapshot.initial(width, height);
         this.board = snapshot.generation();
 
-        // Parallelism is the core count, never the partition count: stealing redistributes
-        // work, so unlike the old ThreadPoolExecutor there is nothing to resize when the
-        // partition control moves. Capped by maxPartitions so a tiny board does not start
-        // more workers than it can ever use. Daemon by default, as before.
-        this.workers = new ForkJoinPool(
-                Math.min(maxPartitions, Runtime.getRuntime().availableProcessors()));
+        // Bands run as virtual threads on the same scheduler as the simulation thread below,
+        // which is what waits on them. Keep the two matched: a dedicated ForkJoinPool here
+        // measured 23% slower in the application (see the class comment). Nothing to size,
+        // so nothing to resize when the partition control moves.
+        this.workers = Executors.newVirtualThreadPerTaskExecutor();
 
         this.rules = new LifeRules(workers);
         // The simulation thread spends its life blocked in take()/Future.get(), so a
         // virtual thread is the right fit: it unmounts from any carrier while blocked and
-        // costs nothing while idle. Virtual threads are daemon
-        // by default, so the JVM can still exit if a shutdown path is missed.
+        // costs nothing while idle. It is also why the band executor above is virtual:
+        // change one and the other has to be re-measured. Virtual threads are daemon by
+        // default, so the JVM can still exit if a shutdown path is missed.
         this.simulationThread = Thread.ofVirtual()
                 .name("conway-simulation")
                 .start(this::runLoop);

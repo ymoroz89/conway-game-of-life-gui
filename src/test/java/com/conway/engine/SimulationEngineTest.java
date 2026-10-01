@@ -325,9 +325,9 @@ class SimulationEngineTest {
     @DisplayName("Partition counts are honored and reported by the engine")
     @Timeout(30)
     void partitionCountsAreHonored() throws Exception {
-        // The band workers run on a dedicated ForkJoinPool whose parallelism is fixed at
-        // construction, so there is no pool-sizing apparatus to test and nothing to resize
-        // when the partition control moves. What still matters is that the requested
+        // The band workers are a virtual-thread-per-task executor, which has no size at all,
+        // so there is no pool-sizing apparatus to test and nothing to resize when the
+        // partition control moves. What still matters is that the requested
         // partition count is actually used and produces the same board, which
         // PartitionEquivalenceTest pins down; here we just confirm the engine runs
         // correctly across a range of counts on a banded board.

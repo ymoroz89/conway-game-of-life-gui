@@ -28,13 +28,12 @@ import com.conway.model.PatternLoader;
  *
  * <ul>
  *   <li>{@code platform} (default) &mdash; a fixed pool of platform threads.</li>
- *   <li>{@code virtual} &mdash; virtual-thread-per-task. This harness measured it at parity
- *       with the fixed pool; the application has since moved to a {@code ForkJoinPool} band
- *       pool (see {@link com.conway.engine.SimulationEngine}), which measured 12-19% faster
- *       at 201/4 partitions with parity at 801. The mode remains for comparison.</li>
+ *   <li>{@code virtual} &mdash; virtual-thread-per-task, the executor the application ships
+ *       (see {@link com.conway.engine.SimulationEngine}). This harness ranks it below
+ *       {@code forkjoin}; the application does not &mdash; see below.</li>
  *   <li>{@code forkjoin} &mdash; a dedicated {@link java.util.concurrent.ForkJoinPool}
  *       with parallelism {@code min(maxPartitions, cores)}, the configuration the
- *       application ships. Bands are uneven, because
+ *       application shipped from 2026-09-24 to 2026-10-01. Bands are uneven, because
  *       {@code computeBand} clips rule evaluation to the active region, and the cores are
  *       asymmetric; work stealing is the standard answer to both, so it is worth
  *       measuring against the other two.</li>
@@ -42,6 +41,14 @@ import com.conway.model.PatternLoader;
  *
  * <p>The modes exist so that a change of executor is decided by measurement rather than
  * by argument. Compare them on the same board and partition count.</p>
+ *
+ * <p><strong>This harness cannot choose the application's executor.</strong> It calls
+ * {@code next()} from {@code main}, a platform thread; the application calls it from a
+ * virtual thread, and that reverses the ranking. Here {@code forkjoin} edges ahead; in the
+ * application the virtual-thread executor is 23% faster, because it shares a scheduler with
+ * the thread waiting on the bands. The {@code ForkJoinPool} was adopted on this harness's
+ * evidence in 2026-09 and reverted once it was measured in the application. See the
+ * README's "Choosing the executor".</p>
  *
  * <p>This is a deliberately simple harness, not a rigorous microbenchmark. It warms
  * up, resets to an identical board before every measurement and takes the best of

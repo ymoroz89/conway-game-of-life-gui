@@ -7,8 +7,9 @@ optimizations.
 > **Historical tracking document**, closed on 2026-08-26 with every phase done. It records
 > the plan as executed, not the current code: the note at the top of
 > [`java21-migration.md`](java21-migration.md) lists what has changed since — notably, the
-> band workers moved from virtual threads to a `ForkJoinPool` on 2026-09-24, and
-> `LifeRulesBandingTest` is now `BandCapTest`.
+> band workers moved from virtual threads to a `ForkJoinPool` on 2026-09-24 and back to
+> virtual threads on 2026-10-01 ([why](../README.md#two-kinds-of-work-one-scheduler)), and `LifeRulesBandingTest` is
+> now `BandCapTest`.
 
 ## Status
 
@@ -161,7 +162,8 @@ what is used / rejected / preview-gated with the reasons, and fix the one gap fo
   JDK 25 (JEP 505), so a higher `release` alone does not remove the flags.
 - `Phaser` (persistent band loops) and a `ForkJoinPool` recursive decomposition remain
   rejected for the reasons already measured in `profiling-issues-fixing-progress.md`. (A
-  `ForkJoinPool` was later adopted as the executor behind the unchanged band model.)
+  `ForkJoinPool` was later adopted as the executor behind the unchanged band model, on
+  2026-09-24, and reverted on 2026-10-01.)
 
 ---
 

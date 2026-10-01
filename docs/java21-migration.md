@@ -8,10 +8,13 @@ practices, and GC optimizations.
 > with the band-failure hardening of 2026-08-22). Since then:
 >
 > - **Band workers.** On 2026-09-24 they moved from virtual threads to a dedicated
->   `ForkJoinPool` with parallelism `min(maxPartitions, cores)`, measured 12–19% faster at
->   201×201 with four partitions; see the
+>   `ForkJoinPool` with parallelism `min(maxPartitions, cores)`, ~~measured 12–19% faster at
+>   201×201 with four partitions~~; see the
 >   [concurrency features review](concurrency-features-review.md). The simulation thread is
->   still a virtual thread.
+>   still a virtual thread. **Corrected 2026-10-01:** the 12–19% came from
+>   `GenerationBenchmark`, whose caller is a platform thread; in the application the
+>   `ForkJoinPool` was 23% slower, and the band workers are virtual threads again, as this
+>   document describes ([evidence](../README.md#what-the-application-measured)).
 > - **Code layout.** `LifeRules` moved to `com.conway.engine.rules` the same day. The
 >   per-band kernel is now `BandKernel`, `bandsFor` is `PartitionPlanner.bandsFor`, and
 >   `Thread.ofPlatform()` is no longer used anywhere.
@@ -132,7 +135,8 @@ considered for the join loop and deliberately not adopted: none of them waits, s
 `InterruptedException` contract. The per-feature disposition of the whole toolbox —
 including why a `RecursiveTask` decomposition and a `Phaser` band redesign stay
 rejected — is recorded in the review document. (A `ForkJoinPool` was later adopted as
-the executor behind the unchanged band model, which is a different change.) Structured
+the executor behind the unchanged band model, which is a different change, on 2026-09-24;
+it was reverted on 2026-10-01.) Structured
 Concurrency stayed preview-gated in 21 and is tracked there; it was still in preview in
 JDK 25.
 

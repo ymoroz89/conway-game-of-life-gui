@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Executors;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -34,9 +34,12 @@ import com.conway.model.Generation;
  * single-threaded path with itself. Each parameterized case therefore asserts the band
  * count it expects before comparing boards.
  *
- * <p>The bands run on a dedicated {@link ForkJoinPool}, the executor
- * {@code SimulationEngine} ships with, so the safety net covers the path the application
- * actually takes.
+ * <p>The bands run on a virtual-thread-per-task executor, the one {@code SimulationEngine}
+ * ships with, so the safety net covers the dispatch path the application actually takes.
+ * The test is not vacuous with respect to that executor: replacing it with one that rejects
+ * every task makes nine of the ten cases fail (2026-10-01). The tenth requests 1, 0 and
+ * &minus;4 partitions, which are computed inline and never dispatch, so passing regardless is
+ * correct.
  */
 class PartitionEquivalenceTest {
 
@@ -51,7 +54,7 @@ class PartitionEquivalenceTest {
 
     @BeforeAll
     static void setUp() {
-        executor = new ForkJoinPool(MAX_BANDS);
+        executor = Executors.newVirtualThreadPerTaskExecutor();
         rules = new LifeRules(executor);
     }
 

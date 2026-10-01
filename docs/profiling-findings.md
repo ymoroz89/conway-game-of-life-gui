@@ -23,7 +23,7 @@ the band workers were a `ThreadPoolExecutor` whose threads were named `conway-wo
 | A1, A2 | Profiler artifacts, confirmed by the clean profile. No action |
 | P1-1 | Fixed: the renderer redraws only cells whose color changed |
 | P1-2 | Premise withdrawn. The band count is now capped by the active region, and the calling thread computes one band itself |
-| P1-3 | Fixed, then superseded: the band workers are now a `ForkJoinPool` with parallelism `min(maxPartitions, cores)` |
+| P1-3 | Fixed, then superseded: ~~the band workers are now a `ForkJoinPool` with parallelism `min(maxPartitions, cores)`~~ the band workers are virtual threads, with no pool to size — **corrected 2026-10-01**: a `ForkJoinPool` from 2026-09-24 to 2026-10-01, reverted after measuring 23% slower in the application ([evidence](../README.md#what-the-application-measured)) |
 | P2-4 | Done: two JFR re-profiles, one CPU-sampled and one wall-clock |
 | P2-5 | Done: the population is counted during the band pass, so `Generation.population()` is O(1) |
 | P2-6, P3-7..10, H-11..16 | Context only. No action |

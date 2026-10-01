@@ -10,8 +10,8 @@ lock-free, single-writer concurrency on modern Java.**
 
 The simulation runs on its own thread and publishes immutable snapshots, so the window
 repaints at a steady frame rate no matter how fast generations are produced — more than
-ten thousand a second on the default board. Each generation is split into row bands on a
-`ForkJoinPool`, the renderer writes pixels straight into an image buffer and redraws only
+ten thousand a second on the default board. Each generation is split into row bands that
+run as virtual threads, the renderer writes pixels straight into an image buffer and redraws only
 the cells that changed, and the whole path from engine to screen is one `volatile` read.
 
 ![The application running a 201×201 board. Two Gosper glider guns in opposite corners fire
@@ -26,8 +26,10 @@ partitions.](docs/images/screenshot.png)
 - **Lock-free read path.** Each generation is published together with its statistics as one
   immutable `EngineSnapshot`, through one `volatile` field. The event dispatch thread reads
   it without a lock and can never observe a half-built board.
-- **Data-parallel generations.** Row bands run on a `ForkJoinPool` while the simulation
-  thread computes one band itself; `Future.get()` supplies the happens-before edge.
+- **Data-parallel generations.** Row bands run as virtual threads, on the same scheduler as
+  the simulation thread that waits on them, while it computes one band itself;
+  `Future.get()` supplies the happens-before edge. Keeping waiter and workers on one
+  scheduler is worth 23% throughput ([why](#two-kinds-of-work-one-scheduler)).
 - **Work sized to the live area.** Rule evaluation is clipped to a padded bounding box of the
   live cells, and the band count is capped by how many rows that box spans, so a small
   pattern on a large board runs inline instead of being split into empty bands.
@@ -139,7 +141,7 @@ flowchart LR
     subgraph ENGINE["Simulation thread — single writer"]
         direction TB
         SimulationEngine["SimulationEngine<br/>Owns the board, processes commands"]
-        LifeRules["LifeRules<br/>Row bands on a ForkJoinPool"]
+        LifeRules["LifeRules<br/>Row bands on virtual threads"]
     end
 
     ENGINE -- publishes --> Snapshot(["EngineSnapshot<br/>volatile · polled every frame by LifeFrame"])
@@ -167,7 +169,7 @@ outside the simulation thread ever touches the board.
 | --- | --- | --- | --- |
 | Event dispatch thread | Swing | Input, the render timer, all painting | Nothing in steady state; `sync()` and `close()` only when the board size changes or the window closes |
 | `conway-simulation` | Virtual | Owns the board, applies commands, computes band 0 of each generation, publishes snapshots | `take()` while paused; `Future.get()` on its band workers while running |
-| Band workers | `ForkJoinPool`, parallelism `min(maxPartitions, cores)` | Bands 1…N−1 of each generation | Never — pure CPU |
+| Band workers | Virtual, one per band (`newVirtualThreadPerTaskExecutor`), on the simulation thread's scheduler | Bands 1…N−1 of each generation | Never — pure CPU |
 | `main` | Platform | Reads configuration, builds the engine, seeds the first board, hands off to the EDT | `sync()`, once, until the seed is on the board |
 
 ### Components
@@ -317,29 +319,94 @@ Command command = running ? commands.poll() : commands.take();
 This is the **actor** pattern: one thread owns the state, and everyone else sends it
 messages.
 
-### Two kinds of thread, chosen by shape
+### Two kinds of work, one scheduler
 
 The simulation thread spends its life blocked — in `take()` while paused, in
 `Future.get()` while its band workers finish — so it is a **virtual thread**: it unmounts
 from its carrier while blocked and costs nothing while idle. Virtual threads are daemon
 threads, so the JVM can still exit if a shutdown path is missed.
 
-The band workers are the opposite shape. `computeBand` never blocks: it is pure CPU, at
-tens of thousands of band dispatches per second (about 50–60k on the default board) —
-exactly the case virtual threads do not address. They run on a dedicated
-**`ForkJoinPool`**, for two reasons:
+The band workers are **virtual threads too**, one per band, and the reason is the thread
+above rather than the bands themselves. `computeBand` never blocks: it is pure CPU, which
+is not what virtual threads are usually for. But a band on the default board is only about
+10,000 cells, and three are dispatched per generation — about 67,000 dispatches a second at
+the application's measured 22,283 generations/s — so the cost that matters is the hand-off
+between the simulation thread and its bands, not the bands. Because the simulation thread
+is virtual, putting the bands on the same scheduler keeps that hand-off cheap.
 
-- **Work stealing.** Bands are uneven, because rule evaluation is clipped to the active
-  region, and the reference machine's cores are asymmetric (6 performance + 4
-  efficiency). A generation ends at a barrier, so the slowest band sets the pace;
-  stealing lets a worker that finishes early absorb the rest instead of idling.
-- **Cheaper hand-off.** Per-worker deques avoid the single contended queue of a fixed
-  pool.
+Each generation, the simulation thread dispatches three bands, computes the fourth itself,
+and waits in `Future.get()` for the three. The JDK schedules virtual threads on its own
+`ForkJoinPool`, separate from any pool the application creates:
 
-Measured, this is 12–19% faster than virtual-thread workers on the default board at four
-partitions, and at parity on an 801 board ([numbers](#choosing-the-executor)). The pool's
-parallelism is fixed at construction as `min(maxPartitions, cores)`, so nothing has to be
-resized when the partition control moves.
+```text
+ForkJoinPool (shipped 2026-09-24 to 2026-10-01) — two pools
+
+  [JDK virtual-thread scheduler]   simulation thread lives here
+        │ submit 3 bands → the other pool's outside queue; wake a worker if one is asleep
+        ▼
+  [application's ForkJoinPool]     bands run here; the simulation thread's carrier idles
+        │ band done → wake the simulation thread → outside queue back; wake a carrier
+        │             if none is awake to take it
+        ▼
+  back to the JDK scheduler        ← crosses over and back every generation
+
+Virtual-thread executor (shipped since 2026-10-01) — one pool
+
+  [JDK virtual-thread scheduler: one carrier per core (10 here), each with its own queue]
+        simulation thread + all bands here
+        • submit 3 bands     → this same pool's outside queue
+        • simulation thread waits
+                             → its carrier is free to pick up a band instead of idling
+        • band finishes      → the simulation thread is queued on that same,
+                               already-awake carrier, via the carrier's local queue
+```
+
+In one line: a virtual simulation thread plus a virtual-thread executor keeps the whole
+generation inside one scheduler, so the wake-up is local and threads that are already awake
+do the next piece of work.
+
+Every step is in the JDK 21 source (OpenJDK 21.0.12.1, `lib/src.zip`):
+
+| Step | Source |
+| --- | --- |
+| Virtual threads run on a dedicated `ForkJoinPool`, not the common pool and not the application's | `VirtualThread.java:71` (`DEFAULT_SCHEDULER`), built at `:1145–1176` with parallelism = available processors and `asyncMode = true` |
+| Starting a virtual thread submits it from the starting thread, **without** switching to the carrier — so dispatch is an outside-queue submission in both designs | `VirtualThread.java:540–560` (`start` → `submitRunContinuation`) |
+| Submission goes to the submitting thread's own local deque only if it is a worker of that same pool; otherwise to an outside submission queue | `ForkJoinPool.java:2358–2372` (`poolSubmit`: `:2363–2365` local, `:2366–2368` outside); `execute` reaches it at `:2846–2849` |
+| A virtual thread unparking another switches to its own carrier first, so the resubmission comes from a worker of the scheduler — the local deque | `VirtualThread.java:742–748`, then `:262–264` (`submitRunContinuation` → `scheduler.execute`) |
+| A platform thread unparking a virtual thread resubmits directly — an outside submission | `VirtualThread.java:750` |
+| `ForkJoinTask.get()` waits with `LockSupport.park`, not a monitor | `ForkJoinTask.java:459`, `:461` |
+
+So the difference is in the wait and the wake-up, not the submit. The virtual-thread
+scheduler is itself a work-stealing `ForkJoinPool`, so uneven bands (rule evaluation is
+clipped to the active region) and the reference machine's asymmetric cores (6 performance +
+4 efficiency) are still absorbed by stealing. Nothing is sized, so nothing has to be resized
+when the partition control moves.
+
+**It is not pinning.** Because `ForkJoinTask.get()` parks rather than holding a monitor, a
+virtual thread blocked on it unmounts normally. JFR with `jdk.VirtualThreadPinned` at a 0 ms
+threshold captured zero pins on JDK 21 under both executors ([JVM tuning](#jvm-tuning)).
+
+**Not established:** the cost of each hand-off. The gap is 13.7 µs per generation (58.6 µs
+under `ForkJoinPool` against 44.9 µs under virtual threads), consistent with a few thread
+wake-ups per generation, but the wake-ups were not counted. JFR's thread-park and
+context-switch events on the two arms would count them.
+
+> **Corrected 2026-10-01.** From 2026-09-24 this section argued the opposite, and the code
+> followed it:
+>
+> ~~The band workers are the opposite shape. `computeBand` never blocks: it is pure CPU, at
+> tens of thousands of band dispatches per second (about 50–60k on the default board) —
+> exactly the case virtual threads do not address. They run on a dedicated
+> `ForkJoinPool`, for two reasons: work stealing, and cheaper hand-off through per-worker
+> deques.~~
+>
+> ~~Measured, this is 12–19% faster than virtual-thread workers on the default board at four
+> partitions, and at parity on an 801 board.~~
+>
+> The measurement was real, but it was taken in `GenerationBenchmark`, whose waiting thread
+> is a platform thread. In the application, whose waiting thread is virtual, the dedicated
+> `ForkJoinPool` was **23% slower**. [Choosing the executor](#choosing-the-executor) has the
+> numbers.
 
 ### Inside one generation: parallelism without locks
 
@@ -396,7 +463,7 @@ sequenceDiagram
     participant Queue as Command queue
     participant Snap as volatile snapshot field
     participant Sim as Simulation thread
-    participant Workers as Band workers (ForkJoinPool)
+    participant Workers as Band workers (virtual threads)
 
     User->>EDT: clicks Start
     EDT->>Queue: enqueue SetPartitions, then Signal.START
@@ -456,7 +523,8 @@ thread has not stopped within 5 seconds, interrupts it and waits up to 5 more.
 | Actor | One thread owns mutable state; everyone else sends it messages instead of calling it |
 | Single-writer principle | Only one thread ever mutates a piece of state, so reads need no lock |
 | Virtual thread | A thread, final since JDK 21, that unmounts from its carrier while blocked, so idle ones cost almost nothing |
-| Work stealing | An idle `ForkJoinPool` worker takes tasks queued for a busy one, so uneven work does not leave cores idle |
+| Carrier thread | The platform thread a virtual thread runs on while mounted. The JDK's virtual-thread scheduler is a `ForkJoinPool` of them, separate from any pool the application creates |
+| Work stealing | An idle `ForkJoinPool` worker takes tasks queued for a busy one, so uneven work does not leave cores idle. The virtual-thread scheduler steals, which is how uneven bands are balanced here |
 | Active region | The bounding box of the live cells, padded by one. Rule evaluation is clipped to it, and it caps the band count |
 
 ## Modern Java, where it earns its place
@@ -465,7 +533,7 @@ Each feature below is used where it removes code or closes off a class of bug.
 
 | Feature | Since | Where | What it buys |
 | --- | --- | --- | --- |
-| Virtual threads (JEP 444) | 21 | The simulation thread in `SimulationEngine` | A thread that is blocked most of its life costs nothing while idle |
+| Virtual threads (JEP 444) | 21 | The simulation thread and the band workers in `SimulationEngine` | A thread that is blocked most of its life costs nothing while idle, and bands on the same scheduler as the thread waiting on them make each generation's hand-off cheap |
 | Pattern matching for `switch` (JEP 441) | 21 | `SimulationEngine.handle` | Exhaustive dispatch over the sealed `Command` hierarchy |
 | Record patterns (JEP 440) | 21 | `SimulationEngine.releasePendingBarriers` | Matches and destructures `Barrier(CountDownLatch latch)` in one step |
 | Sequenced collections (JEP 431) | 21 | `Pattern.parse` | `getLast()` and `removeLast()` to trim trailing blank rows |
@@ -494,11 +562,14 @@ The load-bearing test is
 Partitioning is a work-distribution concern, so the resulting board must not depend on how
 many bands the work was split into. The test runs every band count from 2 to 8 on a
 401×401 random board, and six bands on a non-square board 131 cells wide and 307 tall,
-comparing each generation with the single-threaded result, on the same kind of dedicated
-`ForkJoinPool` the engine uses. That catches off-by-one errors at band boundaries, rows
-computed twice or skipped, and accidental sharing of mutable state between workers. Each
-of those cases first asserts that the band count it asked for is the one that actually
-runs, so the test cannot quietly degrade into comparing the inline path with itself.
+comparing each generation with the single-threaded result, on the same
+virtual-thread-per-task executor the engine uses. That catches off-by-one errors at band
+boundaries, rows computed twice or skipped, and accidental sharing of mutable state between
+workers. Each of those cases first asserts that the band count it asked for is the one that
+actually runs, so the test cannot quietly degrade into comparing the inline path with
+itself. It also depends on the executor: swapping in one that rejects every task fails nine
+of its ten cases (2026-10-01); the tenth only requests 1, 0 and −4 partitions, which never
+dispatch.
 
 | Suite | Pins down |
 | --- | --- |
@@ -525,16 +596,23 @@ seeds the same two-gun board the application starts with, and measures partition
 `min(gridSize, max(2, 2 × cores))`, plus that maximum itself.
 
 The default executor is **not** the path the application takes. `SimulationEngine` uses a
-`ForkJoinPool`, while the harness defaults to a fixed platform pool, so measure the
-shipping configuration explicitly:
+virtual-thread-per-task executor, which is the harness's `virtual` mode:
 
 ```bash
-java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 forkjoin
+java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
 ```
+
+**But no mode reproduces the application, and the harness cannot rank executors for it.**
+The harness calls `next()` from `main`, a platform thread; the application calls it from its
+virtual simulation thread. That difference reverses which executor wins — by 23% on the
+default board ([why](#why-the-harness-and-the-application-disagree)). Use the harness for
+the shape of the partition curve, not for the choice of executor.
 
 The three modes exist so that a change of executor is settled by measurement rather than
 by argument — which is how both the move to virtual threads and the later move away from
-them were decided.
+them were decided. ~~The move away~~ **Corrected 2026-10-01:** the move away, on
+2026-09-24, was decided on this harness and reversed once it was measured in the
+application.
 
 > **Read the numbers as indicative, not precise.** The harness warms up, resets to an
 > identical board before each measurement and takes the best of five — enough to show
@@ -543,13 +621,16 @@ them were decided.
 > in ascending order inside a single JVM, so later rows inherit a warmer JIT; differences
 > between adjacent rows are not reliable. At the default 300 generations, a measurement
 > on the 201 board lasts only about 20 ms; pass a larger count, such as
-> `201 5000 forkjoin`, to lengthen each one. Reach for JMH before drawing any conclusion
+> `201 5000 virtual`, to lengthen each one. Reach for JMH before drawing any conclusion
 > finer than "does adding threads help at all".
 
 ### Parallel speedup on the default board
 
-Measured on a 201×201 board with the shipping `forkjoin` executor — Apple M2 Pro
-(6 performance + 4 efficiency cores), JDK 25, 300 generations per measurement. Two layers
+Measured on a 201×201 board with the ~~shipping~~ `forkjoin` executor — the shipping one
+from 2026-09-24 to 2026-10-01; this table has not been re-measured since the engine moved
+back to virtual threads, and like everything from the harness it has a platform thread
+waiting — Apple M2 Pro (6 performance + 4 efficiency cores), JDK 25, 300 generations per
+measurement. Two layers
 of "best of" are involved: each invocation of the harness reports its own best of five,
 and each figure below is the best of **four separate invocations**, interleaved with the
 other executor modes.
@@ -575,8 +656,16 @@ boards, [below](#how-the-default-partition-count-is-chosen).
 
 ### Choosing the executor
 
+> **Corrected 2026-10-01: the ranking below reverses in the application, and the engine now
+> uses virtual threads.** The table is a real measurement, but of the harness, which calls
+> `next()` from `main`, a platform thread. The application calls it from its virtual
+> simulation thread, and that is what decides which executor wins. The original analysis is
+> kept as a record; [what the application measured](#what-the-application-measured) and
+> [why the two disagree](#why-the-harness-and-the-application-disagree) follow it.
+
 The band workers never block, so the choice of executor is a question about dispatch cost
-and load balancing, not about concurrency. All three modes were run round-robin
+and load balancing~~, not about concurrency~~ — and, it turned out, about which scheduler
+the thread waiting on them runs on. All three modes were run round-robin
 (`platform`, `virtual`, `forkjoin`, repeat) so background load fell evenly on each. Every
 cell is the best across separate invocations of the harness, each reporting its own best
 of five: four invocations of 300 generations for the 201 rows, three of 200 for the 801
@@ -591,15 +680,19 @@ rows.
 | 801 | 4 | 3,191 | 3,226 | 3,216 |
 | 801 | 16 | 3,636 | 3,833 | 3,865 |
 
-- **At 201 with the recommended four partitions, work stealing wins.** It is worth about
+- ~~**At 201 with the recommended four partitions, work stealing wins.** It is worth about
   12% over virtual threads on the best figures, and nearer 19% on the means. A band there
   is only ~10,000 cells, so dispatch overhead is a real fraction of the work, and a
   `ForkJoinPool`'s per-worker deques beat a single contended queue at about 50–60k
   dispatches a second — each generation dispatches three of its four bands and computes
-  the fourth inline.
+  the fourth inline.~~ **Corrected 2026-10-01:** true of the harness only. With a virtual
+  thread waiting, as in the application, `forkjoin` is 23% *slower*. The premise survives —
+  a band is only ~10,000 cells, so the hand-off is a real fraction of the work — and is
+  exactly why which scheduler the hand-off crosses matters so much.
 - **At 801, the executor stops mattering.** A band carries four to sixteen times the cells
   of a 201 band (at 16 and 4 partitions respectively), so the three executors land within
-  ±4% of their mean — 3,191 to 3,226 at 4 partitions, 3,636 to 3,865 at 16.
+  ±4% of their mean — 3,191 to 3,226 at 4 partitions, 3,636 to 3,865 at 16. Harness
+  figures, not re-measured in the application.
 - **The 1-partition row is the control.** It computes inline on the calling thread with
   no dispatch at all, so all three modes agreeing there says the harness is measuring what
   it claims to.
@@ -608,6 +701,44 @@ rows.
 so this row repeats the 201 | 4 row's work under a different label. It is kept to show
 the run-to-run spread, not as a scaling result, and its winner is deliberately not
 highlighted.
+
+#### What the application measured
+
+The application itself, on 2026-09-30: `drive.GuiDrive` running the real window for
+2,000,000 generations, JDK 21.0.12.1, commit `13fc868`, five runs per arm interleaved by
+repetition, the two arms differing only in the executor line of `SimulationEngine`:
+
+| Band executor | Median generations/s | Range of five runs |
+| --- | --- | --- |
+| `ForkJoinPool`, parallelism `min(maxPartitions, cores)` — shipped 2026-09-24 to 2026-10-01 | 17,058.7 | 15,935.3–17,652.1 |
+| Virtual-thread-per-task — shipped since 2026-10-01 | **22,282.8** | 20,070.5–22,605.9 |
+
+Virtual threads are 30.6% faster; put the other way, the `ForkJoinPool` costs 23.4%. Every
+virtual-thread run beat every `ForkJoinPool` run. For scale, an A/A run of the same rig that
+day — two arms identical by construction — differed by 1.71%. Only the executor line was
+isolated: the rest of the 2026-09-24 commit that introduced the `ForkJoinPool` (`af088a4`,
+which also moved packages and extracted classes) was not re-measured.
+
+#### Why the harness and the application disagree
+
+The one variable that differs between them is the thread waiting on the bands. Crossing it
+with the executor — headless, JDK 21.0.12.1, 4 partitions, seven interleaved repetitions of
+50,000 generations, 2026-10-01:
+
+| Thread waiting on the bands | `forkjoin` | `virtual` |
+| --- | --- | --- |
+| Platform, as in `GenerationBenchmark` | 17,139 | 16,253 |
+| Virtual, as in the application | 17,022 | **20,917** |
+
+`forkjoin` does not care who waits: 17,139 against 17,022. `virtual` gains 28.7%, but only
+when the waiter is itself a virtual thread. Each row reproduces one of the two contradictory
+results — the platform row is the harness's ordering, the virtual row the application's.
+
+The mechanism is in [Two kinds of work, one scheduler](#two-kinds-of-work-one-scheduler):
+the virtual-thread executor's advantage exists only when it shares a scheduler with the
+thread waiting on the bands. In the harness that thread is `main`, a platform thread, so
+neither executor shares its scheduler; the virtual-thread executor pays for a thread per band
+with nothing to gain, and `forkjoin` edges ahead.
 
 ### How the default partition count is chosen
 
@@ -715,8 +846,9 @@ Those sizes are derived from the formula plus room for ZGC to allocate while it 
 the GUI itself was not run at that size.
 
 **Virtual-thread pinning.** JFR recordings on JDK 21, with `jdk.VirtualThreadPinned`'s
-threshold lowered to 0 ms, captured zero pins — first when the band workers were still
-virtual threads alongside the actor, and again with the current `ForkJoinPool` workers.
+threshold lowered to 0 ms, captured zero pins — first when the band workers were virtual
+threads alongside the actor, as they are again since 2026-10-01, and then with the
+`ForkJoinPool` workers used from 2026-09-24 to 2026-10-01.
 JDK 25 captured **one**: a single 12.8 µs pin inside the JDK's own class loading (a
 contended `ZipFile` monitor while the simulation thread lazily loaded a class), not in the
 engine's `take()` or `Future.get()`. Only JDK 25 could see it: its version of the event

@@ -12,7 +12,10 @@ Each entry records the code as that fix landed, between 2026-07-31 and 2026-08-0
 > - **P1-3's mechanism no longer exists.** The Java 21 migration (2026-08-06) replaced the
 >   `ThreadPoolExecutor` with virtual-thread band workers, deleting `setCorePoolSize`, the
 >   keepalive and the three pool-sizing tests named below. On 2026-09-24 the band workers
->   became a `ForkJoinPool` with parallelism `min(maxPartitions, cores)`.
+>   became a `ForkJoinPool` with parallelism `min(maxPartitions, cores)`, and on 2026-10-01
+>   they went back to virtual threads: the `ForkJoinPool` had measured faster only in
+>   `GenerationBenchmark`, whose caller is a platform thread, and was 23% slower in the
+>   application ([evidence](../README.md#what-the-application-measured)).
 > - **Code moved** (2026-09-24 onward). `LifeRules` is now in `com.conway.engine.rules`;
 >   `computeBand` and `ruleAt` live in `BandKernel`; `bandsFor` is `PartitionPlanner.bandsFor`;
 >   `LifeRulesBandingTest` is `BandCapTest`. The empty-region early return in `LifeRules.next`
@@ -25,7 +28,7 @@ Each entry records the code as that fix landed, between 2026-07-31 and 2026-08-0
 | --- | --- | --- | --- |
 | P1-1 | Renderer redraws the whole board every frame | 🔴 P1 | ✅ **Done** |
 | P1-2 | Per-generation barrier caps parallelism | 🔴 P1 | ◐ **Partly** — see notes |
-| P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** — since superseded by a `ForkJoinPool` |
+| P1-3 | Worker pool five times oversized | 🔴 P1 | ✅ **Done** — since superseded by virtual-thread band workers, which have no pool to size (a `ForkJoinPool` from 2026-09-24 to 2026-10-01) |
 | P2-4 | Re-profile with sampling rather than instrumentation | 🟡 P2 | ✅ **Done** |
 | P2-4b | Second validation pass: wall-clock, real application | 🟡 P2 | ✅ **Done** |
 | P2-5 | `Generation.population()` scans the board every frame | 🟡 P2 | ✅ **Done later** — counted in the band pass |
@@ -252,8 +255,9 @@ behavior change in its own right: **small boards no longer use the worker pool a
 
 > **Superseded.** Everything below describes a `ThreadPoolExecutor` that no longer exists:
 > the Java 21 migration replaced it with virtual-thread band workers, and those became a
-> `ForkJoinPool` with parallelism `min(maxPartitions, cores)` on 2026-09-24. Neither pool has
-> a core size to track, and the three tests named here were deleted with it.
+> `ForkJoinPool` with parallelism `min(maxPartitions, cores)` on 2026-09-24, then virtual
+> threads again on 2026-10-01. None of them has a core size to track, and the three tests
+> named here were deleted with the `ThreadPoolExecutor`.
 
 **Problem.** The thread dump showed **20 live `conway-worker` threads serving 4 concurrent
 bands**. The pool was created with `corePoolSize == maximumPoolSize == maxPartitions` (20).
@@ -626,7 +630,7 @@ few percent more — not a multiple.
 | --- | --- | --- |
 | **`Phaser` with persistent band loops** | The remaining hand-offs | Workers become engine-owned rather than a shared pool, so `setPartitions` turns from a cheap command into a reconfiguration, and pausing must be handled explicitly or the spin phase burns CPU while idle. Safety is preserved: `arriveAndAwaitAdvance` gives the same happens-before edge |
 | **Finer bands** | Imbalance | Now known to be worth 5–19% at most, and `bandsFor` caps band count because more bands measured about 6× slower on a sparse board. Not worth pursuing |
-| **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent. **Later adopted in its cheap form** (2026-09-24): a `ForkJoinPool` as the executor behind the unchanged band model, measured 12–19% faster at 201×201 with four partitions. The rewrite described here stays rejected |
+| **Work stealing** (`ForkJoinPool`) | Both | Largest rewrite, replaces the band model `PartitionEquivalenceTest` is written against, for a few percent. **Later adopted in its cheap form** (2026-09-24): a `ForkJoinPool` as the executor behind the unchanged band model, ~~measured 12–19% faster at 201×201 with four partitions~~. **Corrected 2026-10-01:** that measurement was `GenerationBenchmark`'s, with a platform thread waiting; in the application it was 23% slower, and the band workers went back to virtual threads ([evidence](../README.md#what-the-application-measured)). The rewrite described here stays rejected |
 
 **Recommendation: stop here.** The cheap, low-risk part is done. What is left is a few percent
 behind a real concurrency redesign, on an engine already running ~300× faster than the 60 fps

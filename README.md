@@ -22,14 +22,17 @@ partitions.](docs/images/screenshot.png)
 ## Highlights
 
 - **Single-writer actor.** One virtual thread owns the board. The UI never touches its
-  state: buttons, spinners and clicks become commands on a `BlockingQueue`.
+  state: buttons, the partition spinner and clicks become commands on a `BlockingQueue`.
+  Changing the board size is the one control that does not — it replaces the engine
+  rather than editing it.
 - **Lock-free read path.** Each generation is published together with its statistics as one
   immutable `EngineSnapshot`, through one `volatile` field. The event dispatch thread reads
   it without a lock and can never observe a half-built board.
 - **Data-parallel generations.** Row bands run as virtual threads, on the same scheduler as
   the simulation thread that waits on them, while it computes one band itself;
-  `Future.get()` supplies the happens-before edge. Keeping waiter and workers on one
-  scheduler is worth 23% throughput ([why](#two-kinds-of-work-one-scheduler)).
+  `Future.get()` supplies the happens-before edge. Measured in the application, the
+  dedicated `ForkJoinPool` this replaced was 23.4% slower; virtual threads are 30.6% faster
+  ([why](#two-kinds-of-work-one-scheduler)).
 - **Work sized to the live area.** Rule evaluation is clipped to a padded bounding box of the
   live cells, and the band count is capped by how many rows that box spans, so a small
   pattern on a large board runs inline instead of being split into empty bands.
@@ -57,8 +60,8 @@ partitions.](docs/images/screenshot.png)
   interesting part
 - [Modern Java, where it earns its place](#modern-java-where-it-earns-its-place)
 - [Testing](#testing)
-- [Performance](#performance) — the benchmark, and how the executor and partition rule were
-  chosen
+- [Performance](#performance) — the benchmark, how the executor and partition rule were
+  chosen, and how JDK versions are compared
 - [JVM tuning](#jvm-tuning)
 - [Further reading](#further-reading)
 
@@ -136,7 +139,7 @@ flowchart LR
 
     subgraph UI["Swing event dispatch thread"]
         direction TB
-        LifeFrame["LifeFrame<br/>Timer pulls snapshots via refresh()<br/>Buttons and spinners send commands"]
+        LifeFrame["LifeFrame<br/>Timer pulls snapshots via refresh()<br/>Controls send commands<br/>Board size rebuilds the engine"]
         BoardView["BoardView<br/>Pixel blit onto BufferedImage"]
     end
 
@@ -185,7 +188,7 @@ outside the simulation thread ever touches the board.
 | [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Schedules a generation: splits it into row bands, runs them on a borrowed executor, assembles the result |
 | [`BandKernel`](src/main/java/com/conway/engine/rules/BandKernel.java) | The hot loop: applies the rules to one band of rows, clipped to the active region |
 | [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule, both for the default partition count and for the per-generation band cap |
-| [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags, active region, population |
+| [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags (handed out unwrapped, read-only by contract), active region, population |
 | [`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java) | A generation and its [`SimulationStats`](src/main/java/com/conway/engine/support/SimulationStats.java), published as one unit |
 | [`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java) | The window: controls, status bar and render timer. Translates gestures into commands |
 | [`BoardView`](src/main/java/com/conway/ui/BoardView.java) | The incremental pixel renderer and pointer-to-cell mapping |
@@ -266,6 +269,11 @@ Never a mixture.
 And because the object is immutable, there is no *second* problem: once you hold it,
 nothing can change it under you. There is nothing left to lock.
 
+Strictly, that immutability is a contract the code keeps rather than one the compiler
+enforces. `Generation.aliveCells()` and `everAliveCells()` hand out the arrays themselves,
+unwrapped, so `BandKernel` and `BoardView` can read a board without copying it — and neither
+ever writes to them.
+
 Two consequences worth noticing in the code:
 
 - The board and its statistics are bundled into one `EngineSnapshot` rather than
@@ -281,7 +289,10 @@ Point 3 from above: the EDT has to start, stop and edit the simulation without b
 It cannot call into the simulation thread's state directly — that would just recreate
 the shared-mutable-state problem in the opposite direction.
 
-So every control is a message. `SimulationEngine`'s mutating methods — `start`, `pause`,
+So every control that edits the simulation is a message. (The board-size control is the
+one exception, and it does not edit the board at all: on the EDT, and only while paused,
+`LifeFrame.applyBoardSize` closes the engine and constructs a new one with a new view.)
+`SimulationEngine`'s mutating methods — `start`, `pause`,
 `step`, `clear`, `toggleCell`, `place` and `setPartitions` — do nothing beyond validating
 or clamping their arguments where needed (`place` rejects a null pattern, `setPartitions`
 clamps into range) and putting an object on a queue:
@@ -338,8 +349,10 @@ the application's measured 22,283 generations/s — so the cost that matters is 
 between the simulation thread and its bands, not the bands. Because the simulation thread
 is virtual, putting the bands on the same scheduler keeps that hand-off cheap.
 
-Each generation, the simulation thread dispatches three bands, computes the fourth itself,
-and waits in `Future.get()` for the three. The JDK schedules virtual threads on its own
+On the default board each generation is four bands: the simulation thread dispatches three,
+computes the fourth itself, and waits in `Future.get()` for the three. (Larger boards run
+more bands; a small or sparse board runs a single band inline, with no hand-off at all.)
+The JDK schedules virtual threads on its own
 `ForkJoinPool`, separate from any pool the application creates:
 
 ```text
@@ -614,8 +627,9 @@ java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
 
 **But no mode reproduces the application, and the harness cannot rank executors for it.**
 The harness calls `next()` from `main`, a platform thread; the application calls it from its
-virtual simulation thread. That difference reverses which executor wins — by 23% on the
-default board ([why](#why-the-harness-and-the-application-disagree)). Use the harness for
+virtual simulation thread. That difference reverses which executor wins: in the application
+the `ForkJoinPool` is 23.4% slower on the default board
+([why](#why-the-harness-and-the-application-disagree)). Use the harness for
 the shape of the partition curve, not for the choice of executor.
 
 The three modes exist so that a change of executor is settled by measurement rather than
@@ -822,6 +836,42 @@ beyond that point repeats the same work, and the differences between them are
 measurement artifact rather than scaling. Only the 1601 row still varies across all six
 columns.
 
+### Comparing JDK versions
+
+`GenerationBenchmark` is the wrong instrument for comparing JDKs: it measures a harness, and
+the [executor episode](#why-the-harness-and-the-application-disagree) shows a harness can rank
+things the opposite way to the application. JDK comparisons are therefore run on the shipping
+application, with two pieces kept in this repository:
+
+| Piece | Where | What it is |
+| --- | --- | --- |
+| Rig | `tools/bench/` | `drive/GuiDrive.java` drives the real window, event dispatch thread and repaint for a fixed number of generations. `drive/GateCheck.java` steps a seeded board an exact number of generations and hashes it, so two JVMs are shown to compute the same board before any timing is compared. `bench.conf.example` and `jdks.conf.example` are the templates for the live configs, which stay gitignored |
+| Method | `.claude/skills/jdk-performance-comparison/` | A project-level Claude Code skill: the procedure (interleaved arms, a measured noise floor, separate rounds with and without JFR, the JVM read back from every recording), the runner `scripts/run-matrix.sh` and the JFR parser `scripts/parse_jfr.py` |
+
+Claude Code picks the skill up automatically in this repository: ask it to compare JDK
+versions, or invoke `/jdk-performance-comparison`. The scripts also run on their own from the
+repository root; the exact steps for the last comparison are in
+[the profiling log](PROFILING-LOG.md#reproducing). Raw output goes to `profiling/`, which is
+gitignored, so a comparison's numbers are kept by writing them into the log.
+
+Two traps catch runs started by hand rather than through the runner:
+
+- **An IDE run configuration uses the IDE's JDK, not the one you meant.** On the reference
+  machine IntelliJ's project SDK is `corretto-25` (Amazon Corretto), a different vendor from
+  the Homebrew OpenJDK builds being compared. Launch through the runner instead: it resolves
+  each JDK itself, checks `java -version` before every run, and the JVM is read back from
+  every recording afterwards.
+- **Profile with JFR, not IntelliJ's profiler.** Every virtual-thread mount and unmount calls
+  a JVMTI notification hook (`VirtualThread.mount()` → `notifyJvmtiMount` in the JDK 21
+  source), and an attached JVMTI agent — which is how IntelliJ's profiler works — makes that
+  hook do real work. Both the simulation thread and the bands are virtual threads, so mounts
+  happen several times per generation, and the profiler distorts exactly the path being
+  measured.
+
+The latest comparison, on 2026-10-01: JDK 25 commits half the heap of JDK 21 (296 against
+620 MiB) with no measurable throughput difference: two identical JDK 21 arms differed by
+3.90%, about as much as JDK 21 and JDK 25 did (+4.5% to +5.1%), and every range overlapped.
+
 ## JVM tuning
 
 The full checklist — which flags for which case, which old flags now stop the JVM from
@@ -901,8 +951,7 @@ The engineering behind the design decisions above is written up in `docs/`:
 | [Profiling findings](docs/profiling-findings.md) | Analysis of a VisualVM snapshot and thread dump, with the findings a later clean JFR profile overturned marked as such |
 | [Profiling fixes](docs/profiling-issues-fixing-progress.md) | What was done about each finding — incremental rendering, band capping, and the ones deliberately not fixed |
 | [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
-| [Profiling log: Java 21 vs 25](PROFILING-LOG.md) | A JFR comparison of the two JDKs, run by run, with the conclusions that did not survive replication withdrawn in place |
-| [JVM comparison prompt](JVM-COMPARISON-PROMPT.md) | The method and traps from that comparison, written as a brief for re-running it |
+| [Profiling log: Java 21 vs 25](PROFILING-LOG.md) | The latest JDK 21 vs 25 comparison (2026-10-01): method, every number behind the result, what is not established, and how to reproduce it |
 
 This branch, `java25`, carries the application forward to JDK 25. The same application
 also lives on sibling branches, which serve as a testbed for other JDK releases and for
@@ -910,7 +959,7 @@ ports to other languages:
 
 | Branch | What it holds |
 | --- | --- |
-| `main` | The JDK 21 baseline this branch is built on. `src/` is identical and `pom.xml` differs only in `maven.compiler.release`; the bench rig in `tools/bench/` is only on this branch |
+| `main` | The JDK 21 baseline this branch is built on, with its release tagged `v1.0.0` (`a29e9fd`, 2026-10-01). `src/` is identical and `pom.xml` differs only in `maven.compiler.release`; the bench rig in `tools/bench/` and the `jdk-performance-comparison` skill are only on this branch |
 | `java27` | The application carried forward to JDK 27, with `StructuredTaskScope` adopted as a preview API and the build pinned to exactly JDK 27 |
 | `kotlin` | A Kotlin port, built with Gradle |
 | `rust` | A Rust port, built with Cargo |

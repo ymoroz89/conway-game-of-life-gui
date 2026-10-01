@@ -9,7 +9,7 @@ the preflight figures come from the checks described under Preflight.
 
 | Question | Answer |
 | --- | --- |
-| Is JDK 25 faster? | **No resolvable difference.** Two identical JDK 21 arms differ by 3.90%, as much as JDK 21 and 25 do |
+| Is JDK 25 faster? | **No resolvable difference.** Two identical JDK 21 arms differ by 3.90%, about as much as JDK 21 and 25 do (+4.5% to +5.1%), and every range overlaps |
 | Does it use less memory? | **Yes: half the committed heap**, 296 against 620 MiB, with the same live set |
 | What does that cost? | Twice the young collections. GC pause share rises from 0.30% to 0.47% of run time — negligible on both |
 | Are pauses better or worse? | Steady-state p99 is ~17% lower on 25. Warmup has fewer long pauses on 25, but 3 of 10 runs had one 9.6–12.5 ms pause, against 4.0 ms at worst on 21 |

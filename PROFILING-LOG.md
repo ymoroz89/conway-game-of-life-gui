@@ -205,7 +205,9 @@ read from C1 only.
 
 The rig is in `tools/bench/` on the `java25` branch: `drive/GuiDrive.java`,
 `drive/GateCheck.java`, and the templates `bench.conf.example` and `jdks.conf.example`. The
-runner is the `jdk-performance-comparison` skill's `run-matrix.sh`, outside this repository.
+runner, the JFR parser and the method are the project-level `jdk-performance-comparison`
+skill in `.claude/skills/jdk-performance-comparison/`. Commands below run from the
+repository root.
 
 1. Build `main` with JDK 21 and `java25` with JDK 25 (`mvn -DskipTests package`), and stage
    each arm's jar as `/tmp/jdkcmp-<arm>/bench-jar.jar` — the release-21 jar for `21`, `21b`
@@ -218,7 +220,8 @@ runner is the `jdk-performance-comparison` skill's `run-matrix.sh`, outside this
    more than the JDK does:
 
 ```bash
-run-matrix.sh --rounds C1,C3 --reps 5 --units 2000000 \
+.claude/skills/jdk-performance-comparison/scripts/run-matrix.sh \
+    --rounds C1,C3 --reps 5 --units 2000000 \
     --jdks tools/bench/jdks.conf --bench tools/bench/bench.conf \
     --out profiling/run-2M-20261001-jdk
 ```

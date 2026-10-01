@@ -7,8 +7,8 @@
 # twice; GuiDrive.java alone does not say how it was run, which regexes read its output,
 # or what the round options were.
 #
-# Consumed by the generic runner:
-#   ~/.claude/skills/jdk-performance-comparison/scripts/run-matrix.sh
+# Consumed by the generic runner, which ships with this repository's project-level skill:
+#   .claude/skills/jdk-performance-comparison/scripts/run-matrix.sh
 # Everything project-agnostic -- jenv resolution, .java-version handling, worktrees,
 # interleaving, per-round JVM options, results.jsonl -- lives in that script. Only what
 # is specific to Conway lives here.

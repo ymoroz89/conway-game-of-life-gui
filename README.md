@@ -3,7 +3,7 @@
 **A multithreaded Swing implementation of Conway's Game of Life — and a worked example of
 lock-free, single-writer concurrency on modern Java.**
 
-![Java 21+](https://img.shields.io/badge/Java-21%2B-orange)
+![Java 25+](https://img.shields.io/badge/Java-25%2B-orange)
 ![Build: Maven](https://img.shields.io/badge/build-Maven-blue)
 ![Tests: JUnit 5](https://img.shields.io/badge/tests-JUnit%205-green)
 ![UI: Swing](https://img.shields.io/badge/UI-Swing-lightgrey)
@@ -62,8 +62,10 @@ partitions.](docs/images/screenshot.png)
 
 ## Quick start
 
-**Requirements:** JDK 21 or newer, and Maven. The application needs a display; the tests
-do not.
+**Requirements:** JDK 25 or newer, and Maven. This is the `java25` branch: the build
+targets release 25, so Maven must run on a JDK 25 or newer (`JAVA_HOME`), and an older
+`java` refuses the jar with `UnsupportedClassVersionError`. The JDK 21 build is on `main`.
+The application needs a display; the tests do not.
 
 ```bash
 mvn clean package
@@ -545,7 +547,7 @@ Just as deliberately, some features are **not** used. `StructuredTaskScope` woul
 band-failure cleanup automatic, but it is still a preview API in JDK 21 and the project
 allows no preview features. A `RecursiveTask` decomposition would replace the band model
 that `PartitionEquivalenceTest` pins down, for a few percent. The reasoning for every
-Java ≤21 concurrency tool is in the
+Java ≤25 concurrency tool is in the
 [concurrency features review](docs/concurrency-features-review.md).
 
 ## Testing
@@ -816,14 +818,15 @@ starting, and the measurements behind every recommendation — is in
 
 The dominant allocation is two `boolean[]` per generation — about 80 KB on the default
 board, or roughly 1.1–1.6 GB/s at the rates measured above. That is steady, short-lived
-garbage, and G1 absorbs it easily: on the default board, a median pause of 0.51 ms and a
-worst of 7.28 ms, every one inside a 16.7 ms frame.
+garbage, and G1 absorbs it easily. On the default board with a 1 GB heap, two 12-second JDK
+21 runs gave a median pause of 0.51 ms and a worst of 7.28 ms, and a 20-second JDK 25 run of
+the current engine gave 0.44 ms and 1.80 ms — every pause inside a 16.7 ms frame.
 
 | Case | Flags | Why |
 | --- | --- | --- |
 | Every run | `-Xms256m -Xmx1g` | Bounds the heap; without `-Xmx` the reference machine allows 8 GB. A gigabyte is ample for the default board. The doc's full baseline adds a heap dump, an error file and a GC log |
 | Interactive use, default board | `-XX:+UseG1GC -XX:MaxGCPauseMillis=20` | States the default collector. The pause goal is inert here: no pause came near 20 ms |
-| Smoothest possible frames | `-XX:+UseZGC`, plus `-XX:+ZGenerational` on JDK 21 | Worst pause 0.02 ms at the same throughput |
+| Smoothest possible frames | `-XX:+UseZGC` | Worst pause 0.02 ms at the same throughput (measured on JDK 21). Generational is ZGC's only mode since JDK 24; JDK 25 ignores `-XX:+ZGenerational` with a warning |
 | Large boards | ZGC and a heap sized from the board | G1's pauses grow with the heap; the pixel buffer grows with the board's area |
 | Headless benchmark | `-XX:+UseParallelGC` | The throughput collector; pauses do not matter without a UI |
 
@@ -838,7 +841,7 @@ buffer at 4 bytes per pixel and device scale *s*. At the 10,000×10,000 maximum 
 about 1.2 GB on a 1× display and 2.4 GB on a 2× one, so `-Xmx1g` is **not** enough there:
 
 ```bash
-java -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display; add -XX:+ZGenerational on JDK 21
+java -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display
 java -Xmx4g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 2× (Retina) display
 ```
 
@@ -846,15 +849,17 @@ Those sizes are derived from the formula plus room for ZGC to allocate while it 
 the GUI itself was not run at that size.
 
 **Virtual-thread pinning.** JFR recordings on JDK 21, with `jdk.VirtualThreadPinned`'s
-threshold lowered to 0 ms, captured zero pins — first when the band workers were virtual
-threads alongside the actor, as they are again since 2026-10-01, and then with the
-`ForkJoinPool` workers used from 2026-09-24 to 2026-10-01.
-JDK 25 captured **one**: a single 12.8 µs pin inside the JDK's own class loading (a
-contended `ZipFile` monitor while the simulation thread lazily loaded a class), not in the
-engine's `take()` or `Future.get()`. Only JDK 25 could see it: its version of the event
+threshold lowered to 0 ms, captured zero pins — first when the band workers were still
+virtual threads alongside the actor, and again with the current `ForkJoinPool` workers.
+JDK 25 recordings of the current engine have captured **one or two** per run, 3–43 µs
+each, every one inside the JDK's own class loading as the first generation starts (a
+contended monitor while the simulation thread lazily loads a class) and none in the
+engine's `take()` or `Future.get()`. Only JDK 25 can see them: its version of the event
 also records blocking operations such as contended monitor enters — its schema adds a
 *Blocking Operation* field that JDK 21's lacks — so JDK 21's zero is narrower than it
-looks. Background in [`docs/java21-migration.md`](docs/java21-migration.md).
+looks. The exact recording command and its output are in
+[`docs/java25-migration.md`](docs/java25-migration.md#verification); the JDK 21 background
+is in [`docs/java21-migration.md`](docs/java21-migration.md).
 
 ## Further reading
 
@@ -862,19 +867,24 @@ The engineering behind the design decisions above is written up in `docs/`:
 
 | Document | What it covers |
 | --- | --- |
+| [Java 25 migration](docs/java25-migration.md) | What moving 21 → 25 changed and why little did: the release bump, JDK 24/25 GC changes, Structured Concurrency still preview, and the JDK 25 verification |
+| [Java 25 migration plan](docs/java25-migration-plan.md) | The tracking document for that migration, including the recorded `StructuredTaskScope` adoption shape |
 | [Java 21 migration](docs/java21-migration.md) | What changed moving 17 → 21 and why: virtual threads, the single volatile snapshot, JMM and GC cleanup |
-| [Concurrency features review](docs/concurrency-features-review.md) | Every Java ≤21 concurrency tool weighed against this codebase, including what was rejected and the reason |
+| [Java 21 migration plan](docs/java21-migration-plan.md) | The original tracking document for that migration |
+| [Concurrency features review](docs/concurrency-features-review.md) | Every Java ≤25 concurrency tool weighed against this codebase, including what was rejected and the reason |
 | [Profiling findings](docs/profiling-findings.md) | Analysis of a VisualVM snapshot and thread dump, with the findings a later clean JFR profile overturned marked as such |
 | [Profiling fixes](docs/profiling-issues-fixing-progress.md) | What was done about each finding — incremental rendering, band capping, and the ones deliberately not fixed |
 | [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
-| [Migration plan](docs/java21-migration-plan.md) | The original tracking document for the migration |
+| [Profiling log: Java 21 vs 25](PROFILING-LOG.md) | A JFR comparison of the two JDKs, run by run, with the conclusions that did not survive replication withdrawn in place |
+| [JVM comparison prompt](JVM-COMPARISON-PROMPT.md) | The method and traps from that comparison, written as a brief for re-running it |
 
-The same application also lives on sibling branches, which serve as a testbed for newer
-JDK releases and for ports to other languages:
+This branch, `java25`, carries the application forward to JDK 25. The same application
+also lives on sibling branches, which serve as a testbed for other JDK releases and for
+ports to other languages:
 
 | Branch | What it holds |
 | --- | --- |
-| `java25` | The application carried forward to JDK 25 |
-| `java27` | The application carried forward to JDK 27 |
+| `main` | The JDK 21 baseline this branch is built on. The source trees are identical; `pom.xml` differs only in `maven.compiler.release` |
+| `java27` | The application carried forward to JDK 27, with `StructuredTaskScope` adopted as a preview API and the build pinned to exactly JDK 27 |
 | `kotlin` | A Kotlin port, built with Gradle |
 | `rust` | A Rust port, built with Cargo |

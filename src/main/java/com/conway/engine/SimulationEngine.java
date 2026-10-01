@@ -5,8 +5,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -120,7 +118,6 @@ public final class SimulationEngine implements AutoCloseable {
     private final BlockingQueue<Command> commands = new LinkedBlockingQueue<>();
     private final EngineListeners listeners = new EngineListeners();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final ExecutorService workers;
     private final LifeRules rules;
     private final Thread simulationThread;
     private final int maxPartitions;
@@ -160,17 +157,12 @@ public final class SimulationEngine implements AutoCloseable {
         this.snapshot = EngineSnapshot.initial(width, height);
         this.board = snapshot.generation();
 
-        // Bands run as virtual threads on the same scheduler as the simulation thread below,
-        // which is what waits on them. Keep the two matched: a dedicated ForkJoinPool here
-        // measured 23% slower in the application (see the class comment). Nothing to size,
-        // so nothing to resize when the partition control moves.
-        this.workers = Executors.newVirtualThreadPerTaskExecutor();
-
-        this.rules = new LifeRules(workers);
-        // The simulation thread spends its life blocked in take()/Future.get(), so a
+        // LifeRules runs each generation inside its own StructuredTaskScope, so no executor
+        // is owned by the engine anymore.
+        this.rules = new LifeRules();
+        // The simulation thread spends its life blocked in take()/join(), so a
         // virtual thread is the right fit: it unmounts from any carrier while blocked and
-        // costs nothing while idle. It is also why the band executor above is virtual:
-        // change one and the other has to be re-measured. Virtual threads are daemon by
+        // costs nothing while idle. Virtual threads are daemon by
         // default, so the JVM can still exit if a shutdown path is missed.
         this.simulationThread = Thread.ofVirtual()
                 .name("conway-simulation")
@@ -277,7 +269,7 @@ public final class SimulationEngine implements AutoCloseable {
     }
 
     /**
-     * Stops the simulation thread and releases the worker executor.
+     * Stops the simulation thread.
      *
      * <p>Idempotent. Blocks until the thread has stopped or a timeout expires.
      */
@@ -299,9 +291,6 @@ public final class SimulationEngine implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
-        // The pool's worker threads are daemon threads, so this is hygiene rather than a
-        // requirement for the JVM to exit. close() waits for in-flight bands to finish.
-        workers.close();
         setState(State.STOPPED);
         LOG.info("Simulation engine stopped");
     }

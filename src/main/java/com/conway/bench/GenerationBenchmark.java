@@ -81,20 +81,20 @@ public final class GenerationBenchmark {
         Generation seed = seededBoard(gridSize);
         // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
         // down and waits for it to terminate, replacing the manual shutdown block.
-        try (ExecutorService executor = newExecutor(mode, maxPartitions, cores)) {
-            LifeRules rules = new LifeRules(executor);
-            warmUp(rules, seed, maxPartitions);
 
-            Map<Integer, Double> results = new LinkedHashMap<>();
-            for (int partitions = 1; partitions <= maxPartitions; partitions *= 2) {
-                results.put(partitions, measure(rules, seed, partitions, generations));
-            }
-            if (!results.containsKey(maxPartitions)) {
-                results.put(maxPartitions, measure(rules, seed, maxPartitions, generations));
-            }
+        LifeRules rules = new LifeRules();
+        warmUp(rules, seed, maxPartitions);
 
-            report(results);
+        Map<Integer, Double> results = new LinkedHashMap<>();
+        for (int partitions = 1; partitions <= maxPartitions; partitions *= 2) {
+            results.put(partitions, measure(rules, seed, partitions, generations));
         }
+        if (!results.containsKey(maxPartitions)) {
+            results.put(maxPartitions, measure(rules, seed, maxPartitions, generations));
+        }
+
+        report(results);
+
     }
 
     /**

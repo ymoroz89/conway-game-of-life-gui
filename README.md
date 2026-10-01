@@ -3,7 +3,7 @@
 **A multithreaded Swing implementation of Conway's Game of Life — and a worked example of
 lock-free, single-writer concurrency on modern Java.**
 
-![Java 25+](https://img.shields.io/badge/Java-25%2B-orange)
+![Java 27+](https://img.shields.io/badge/Java-25%2B-orange)
 ![Build: Maven](https://img.shields.io/badge/build-Maven-blue)
 ![Tests: JUnit 5](https://img.shields.io/badge/tests-JUnit%205-green)
 ![UI: Swing](https://img.shields.io/badge/UI-Swing-lightgrey)
@@ -67,17 +67,20 @@ partitions.](docs/images/screenshot.png)
 
 ## Quick start
 
-**Requirements:** JDK 25 or newer, and Maven. This is the `java25` branch: the build
-targets release 25, so Maven must run on a JDK 25 or newer (`JAVA_HOME`), and an older
-`java` refuses the jar with `UnsupportedClassVersionError`. The JDK 21 build is on `main`.
-The application needs a display; the tests do not.
+**Requirements:** exactly JDK 27, and Maven. This is the `java27` branch: the build targets
+release 27 and adopts two preview APIs, so it must run on JDK 27 (`JAVA_HOME`) — preview
+class files refuse to load on any other release, older or newer — and every launch command
+must carry `--enable-preview`, which cannot be recorded in the jar manifest. Without it the
+jar fails with `UnsupportedClassVersionError` naming `com/conway/model/PatternLoader`. The
+JDK 21 build is on `main`, the JDK 25 build on `java25`. The application needs a display; the
+tests do not.
 
 ```bash
 mvn clean package
 ```
 
 ```bash
-java -jar target/GuiLife.jar
+java --enable-preview -jar target/GuiLife.jar
 ```
 
 `package` runs the test suite and builds a self-contained (shaded) jar, so no sibling
@@ -128,7 +131,7 @@ its range, is ignored with a logged warning and the default is used instead.
 | `conway.log.level` | `INFO` | — | Root log level |
 
 ```bash
-java -Dconway.gridSize=401 -Dconway.log.level=DEBUG -jar target/GuiLife.jar
+java --enable-preview -Dconway.gridSize=401 -Dconway.log.level=DEBUG -jar target/GuiLife.jar
 ```
 
 ## Architecture
@@ -609,7 +612,7 @@ dispatch.
 ### Running the benchmark
 
 ```bash
-java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
+java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark
 ```
 
 Arguments, all optional: grid size (default 201), generations per measurement (default
@@ -622,7 +625,7 @@ The default executor is **not** the path the application takes. `SimulationEngin
 virtual-thread-per-task executor, which is the harness's `virtual` mode:
 
 ```bash
-java -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
+java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
 ```
 
 **But no mode reproduces the application, and the harness cannot rank executors for it.**
@@ -897,7 +900,7 @@ virtual thread per dispatched band.
 | Headless benchmark | `-XX:+UseParallelGC` | The throughput collector; pauses do not matter without a UI |
 
 ```bash
-java -Xms256m -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
+java --enable-preview -Xms256m -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -jar target/GuiLife.jar
 ```
 
 **Size the heap from the board** once it grows past the default. At N×N cells the heap
@@ -910,8 +913,8 @@ buffer at 4 bytes per physical pixel, for a cell *c* logical pixels wide
 `-Xmx1g` is **not** enough there:
 
 ```bash
-java -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display
-java -Xmx4g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 2× (Retina) display
+java --enable-preview -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display
+java --enable-preview -Xmx4g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 2× (Retina) display
 ```
 
 Those sizes are derived from the formula plus room for ZGC to allocate while it collects;

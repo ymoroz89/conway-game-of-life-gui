@@ -1,0 +1,80 @@
+# Template for tools/bench/bench.conf -- copy to bench.conf and adjust.
+#
+#   cp tools/bench/bench.conf.example tools/bench/bench.conf
+#
+# bench.conf itself is gitignored because it carries local paths, so THIS file is the
+# committed record of how the rig is invoked. It exists because the rig has been lost
+# twice; GuiDrive.java alone does not say how it was run, which regexes read its output,
+# or what the round options were.
+#
+# Consumed by the generic runner, which ships with this repository's project-level skill:
+#   .claude/skills/jdk-performance-comparison/scripts/run-matrix.sh
+# Everything project-agnostic -- jenv resolution, .java-version handling, worktrees,
+# interleaving, per-round JVM options, results.jsonl -- lives in that script. Only what
+# is specific to Conway lives here.
+
+# Environment label. Goes into every filename and every result row, so a harness run can
+# never be mistaken for an application run. This project measures the shipping GUI:
+# window, EDT, incremental repaint. There is deliberately NO headless entry -- a headless
+# path is faster and unattended, so it wins whenever someone is tired or in a hurry, and
+# then the numbers answer a question nobody asked.
+ENV=gui
+
+# No-op on purpose. Each arm's artifact is staged at {WORKTREE}/bench-jar.jar BEFORE the
+# run, so no arm can run a jar its own javac produced -- for a pure-JVM comparison two
+# arms must execute a byte-identical file, and letting each build its own reintroduces a
+# javac difference at the same --release. Verify with shasum before measuring.
+#
+# Set this to a real build only when each arm is SUPPOSED to run its own branch's
+# artifact (the as-shipped question), e.g.:
+#   BUILD_CMD='mvn -q -DskipTests clean package -f {WORKTREE}/pom.xml'
+BUILD_CMD='true'
+
+# {JAVA} resolved JDK, {OPTS} the round's JVM options, {UNITS} the workload size,
+# {WORKTREE} the per-arm worktree -- which is what selects the per-arm artifact.
+# Compile the drivers once at the LOWEST release in the matrix so one build drives every
+# JVM (a release-25 class cannot load on a 21 JVM):
+#   javac --release 21 -cp tools/bench/shared-r21.jar -d tools/bench/out \
+#         tools/bench/drive/GuiDrive.java tools/bench/drive/GateCheck.java
+# The trailing 3 is GuiDrive's start delay in seconds, letting the window settle.
+RUN_CMD='{JAVA} -XX:+UseG1GC {OPTS} -cp tools/bench/out:{WORKTREE}/bench-jar.jar drive.GuiDrive {UNITS} 3'
+
+# Throughput ground truth is the app's own log line, never JFR inference:
+#   Run finished: 2000030 generations in 100.248 s using 4 partition(s), 19950.9 generations/s
+UNITS_RE='Run finished: ([0-9]+) generations'
+SECONDS_RE='generations in ([0-9.]+) s'
+RATE_RE='([0-9.]+) generations/s'
+
+# Readiness markers. macOS foreground treatment is worth up to 3.3x here, so window state
+# is recorded per run rather than assumed. Treat these as ADVISORY: they sample an
+# instant, not the whole run. Measured twice now to NOT correlate with throughput -- in
+# the 2026-09-30 A/A floor the only two runs that ended focused were among the slowest.
+# Check correlation within round and within arm before discarding anything on this basis.
+MARKER_START_RE='GUI-DRIVE WINDOW at-start (.*)'
+MARKER_END_RE='GUI-DRIVE WINDOW at-pause (.*)'
+
+# --- round options ---------------------------------------------------------------
+# Override any round, or define rounds of your own. {JFR} expands to the flight-recorder
+# options. The runner verifies every arm accepts these before measuring -- check the
+# resolved VALUES too (-XX:+PrintFlagsFinal), since a silently different default is as
+# damaging as a rejected flag and much quieter.
+#
+# C1/C3 are left at JVM defaults deliberately: how each JDK sizes the heap on its own IS
+# the finding, so adding a heap flag there deletes the result rather than refining it.
+#
+# For the pinned rounds, prefer a young-gen *floor* over -Xmn. -Xmn pins the young
+# generation and switches adaptive sizing off entirely, which answers "how do they compare
+# with G1's sizing disabled" -- a question nobody asked -- and makes committed heap, young
+# capacity and collection count identical BY CONSTRUCTION, so those rows stop carrying
+# information. A floor leaves adaptation running while stopping one JDK shrinking eden to
+# a third of the other. Verified present and {experimental} on both 21 and 25.
+# Note: on 2026-09-18 the floor was not what bound -- both arms adapted UP to the
+# G1MaxNewSizePercent=60 ceiling, so the heap rows were ceiling-constrained anyway.
+PINNED='-Xms1g -Xmx1g -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=40'
+ROUND_C2="$PINNED"
+ROUND_C4="$PINNED {JFR}"
+
+# A round at the settings this app actually recommends shipping with (docs/jvm-options.md).
+# "How do the JDKs compare under our own tuning" is a fair question -- just a different one
+# from C1/C3, so report it separately rather than folding it in.
+ROUND_shipped='-Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 {JFR}'

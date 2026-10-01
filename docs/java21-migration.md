@@ -22,6 +22,8 @@ practices, and GC optimizations.
 >   the default board at 7.28 ms (median 0.51 ms), not the ~1.58 ms of the 20-second
 >   recording below.
 > - **Structured Concurrency** was still a preview API in JDK 25 (JEP 505).
+> - **Build target.** On this branch, `java25`, `maven.compiler.release` is 25 and JDK 25 is
+>   the minimum; see the [Java 25 migration](java25-migration.md).
 
 ## Build
 

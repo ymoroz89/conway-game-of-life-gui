@@ -1,9 +1,12 @@
 # Production JVM options
 
-A checklist of JVM flags for running this application, organized by situation. Every
-flag line in this document was started on both JDK 21 (the project minimum) and JDK 25,
-and every performance claim was measured on this codebase. The conditions are recorded
-under [Evidence](#evidence), so any number here can be reproduced — or overturned.
+A checklist of JVM flags for running this application, organized by situation. On this
+branch JDK 25 is the minimum: the jar targets release 25, and JDK 21 refuses to load it.
+Every flag line in this document was started on both JDK 21 (`main`'s minimum) and JDK 25;
+the JDK 21 column is kept because it shows what breaks when a deployment moves from 21 to
+25. Every performance claim was measured on this codebase — on JDK 21 unless it says
+otherwise. The conditions are recorded under [Evidence](#evidence), so any number here can
+be reproduced — or overturned.
 
 Where something has **not** been measured, it says so.
 
@@ -12,8 +15,8 @@ Where something has **not** been measured, it says so.
 | Case | Add | Why |
 | --- | --- | --- |
 | Every production run | the [baseline](#1-every-production-run) | Bounded heap, crash artifacts, a GC log |
-| Interactive use, default board | `-XX:+UseG1GC -XX:MaxGCPauseMillis=20` | G1's worst pause (7.3 ms) fits inside a 60 fps frame |
-| Smoothest possible frames | `-XX:+UseZGC`, plus `-XX:+ZGenerational` on JDK 21 | Pauses of ~0.02 ms at the same throughput |
+| Interactive use, default board | `-XX:+UseG1GC -XX:MaxGCPauseMillis=20` | G1's worst pause (7.3 ms on JDK 21, 1.8 ms on JDK 25) fits inside a 60 fps frame |
+| Smoothest possible frames | `-XX:+UseZGC` | Pauses of ~0.02 ms at the same throughput |
 | Boards above a few thousand cells | ZGC and a heap [sized from the board](#4-large-boards) | G1 pauses grow with the heap; the pixel buffer grows with board² |
 | Headless benchmark | `-XX:+UseParallelGC` | The throughput collector; pauses do not matter without a UI |
 | Faster startup (JDK 25 only) | `-XX:AOTCacheOutput`, then `-XX:AOTCache` | Classes loaded and linked ahead of time — not measured here |
@@ -31,8 +34,8 @@ Where something has **not** been measured, it says so.
       by logback only *after* startup, so it does not exist on a fresh clone.
 - [ ] The `HeapDumpPath` directory exists. Unlike `-Xlog` it is not checked at startup —
       only at the moment of an OutOfMemoryError, the worst time to discover it is missing.
-- [ ] On JDK 21, ZGC is paired with `-XX:+ZGenerational`. On JDK 25 it is not: the flag
-      is ignored there with a warning.
+- [ ] No `-XX:+ZGenerational`. JDK 21 needed it to get generational ZGC; JDK 25 ignores it
+      with a warning, because generational is ZGC's only mode since JDK 24.
 - [ ] No expired flags copied from an old guide. Six common ones
       [stop the JVM outright](#flags-that-stop-the-jvm-from-starting).
 - [ ] `-XX:MaxRAMFraction` is replaced by `-XX:MaxRAMPercentage`. The former still starts
@@ -83,8 +86,10 @@ only when needed instead: `jcmd <pid> JFR.start duration=60s filename=rec.jfr`.
 ```
 
 G1 is already the default collector on the reference machine; the flag only states it.
-Measured on the default board: a median pause of **0.51 ms**, a worst of **7.28 ms**,
-and 60–63 ms of pause in total per 12 seconds. Every pause fits inside a 16.7 ms frame.
+Measured on the default board on JDK 21: a median pause of **0.51 ms**, a worst of
+**7.28 ms**, and 60–63 ms of pause in total per 12 seconds. A 20-second JDK 25 run of the
+current engine, with the same heap, gave a median of **0.44 ms**, a worst of **1.80 ms** and
+93 ms in total. Every pause fits inside a 16.7 ms frame.
 
 `MaxGCPauseMillis=20` is **inert** at this board: no pause came near 20 ms. It is also a
 goal that G1 steers toward, not a cap — on the largest board with a 3 GB heap, G1
@@ -93,21 +98,25 @@ paused for 23.6 ms regardless.
 ## 3. Smoothest possible frames
 
 ```bash
--XX:+UseZGC                        # JDK 25
--XX:+UseZGC -XX:+ZGenerational     # JDK 21
+-XX:+UseZGC
 ```
 
 On the default board ZGC's worst pause was **0.02 ms**, against G1's 7.28 ms, at the same
-throughput (16,292–16,648 generations/s versus G1's 16,384). There were **no allocation
-stalls** in either ZGC mode. This removes the collector from the frame-time budget
-entirely.
+throughput (16,292–16,648 generations/s versus G1's 16,384), measured on JDK 21 in both of
+its ZGC modes. There were **no allocation stalls** in either mode. This removes the
+collector from the frame-time budget entirely.
 
-Why `-XX:+ZGenerational` on JDK 21, when it did not measure better? On JDK 21 that flag
-defaults to `false`, so `-XX:+UseZGC` on its own selects the legacy, non-generational
-mode. The two modes measured the same here, even at the 6.6 GB/s allocation rate of the
-largest board. Choose generational because it is the only mode from JDK 24 onwards, so a
-JDK 21 deployment then behaves like its JDK 25 successor. That is a compatibility
-argument, not a performance one.
+Why no `-XX:+ZGenerational`, which `main` pairs with ZGC? On JDK 21 that flag defaults to
+`false`, so `-XX:+UseZGC` on its own selects the legacy, non-generational mode. JDK 24
+removed that mode (JEP 490), so on JDK 25 `-XX:+UseZGC` alone is generational and the old
+flag only prints `Ignoring option ZGenerational; support was removed in 24.0`. Nothing is
+lost: the two modes measured the same on JDK 21, even at the 6.6 GB/s allocation rate of
+the largest board.
+
+JDK 25 also makes Shenandoah's generational mode a product feature (JEP 521):
+`-XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational` starts on the Homebrew build
+without unlocking anything, where JDK 21 rejects the mode. It has **not** been measured on
+this workload, so it is not a recommendation.
 
 Not measured: ZGC's memory footprint relative to G1.
 
@@ -132,7 +141,8 @@ The pixel-buffer term applies once a board reaches 1,000 cells across, where the
 size bottoms out at one pixel. Below that, the buffer stays near the configured board
 size in pixels and is not a concern.
 
-Measured on the engine alone (no GUI) at 10,000×10,000, 15 seconds each:
+Measured on the engine alone (no GUI) at 10,000×10,000, 15 seconds each, on JDK 21 — hence
+the legacy ZGC row, a mode JDK 24 removed:
 
 | Configuration | Outcome | Generations/s | Pauses | Worst pause | Full GCs |
 | --- | --- | --- | --- | --- | --- |
@@ -147,7 +157,7 @@ generation means more to copy per pause, which pushed it past both the 20 ms goa
 60 fps frame. So when the heap has to grow for a large board, switch collector:
 
 ```bash
--Xmx3g -XX:+UseZGC     # 10,000×10,000 on a 1× display  (+ -XX:+ZGenerational on JDK 21)
+-Xmx3g -XX:+UseZGC     # 10,000×10,000 on a 1× display
 -Xmx4g -XX:+UseZGC     # 10,000×10,000 on a 2× display
 ```
 
@@ -161,7 +171,7 @@ this table comes from a single run and was not repeated.
 -XX:+UseParallelGC
 ```
 
-Measured on the default board: 17,046 generations/s, against 16,384 for G1 and
+Measured on the default board on JDK 21: 17,046 generations/s, against 16,384 for G1 and
 16,292–16,648 for ZGC. That lead of about 4% sits inside run-to-run noise, so the reason
 to choose Parallel is that it is the throughput collector by design, not a decisive
 margin. Its 662 short pauses (median 0.19 ms) are irrelevant without a UI.
@@ -224,8 +234,9 @@ The last row is how pinning was checked for this project: a threshold of 0 ms re
 pins of any length, where the default 20 ms would miss short ones. The event exists on
 both JDK versions but does not see the same things — JDK 25's also records blocking
 operations such as contended monitor enters, which JDK 21's cannot. With the current
-engine, JDK 21 reported zero pins and JDK 25 reported one: 12.8 µs inside the JDK's own
-class loading, not in the engine's code.
+engine, JDK 21 reported zero pins and JDK 25 reports one or two per run — 12.8 µs in one
+recording, 3.2 and 43.1 µs in another — all inside the JDK's own class loading as the
+first generation starts, none in the engine's code.
 
 ## Flags that stop the JVM from starting
 
@@ -270,9 +281,10 @@ To see the equivalent on another machine:
 java -XX:+PrintFlagsFinal -version | grep ergonomic
 ```
 
-Between the two JDKs, 13 flags are new in 25 — among them the `AOT*` family and
-`UseCompactObjectHeaders` — and 28 are gone, including `ZGenerational` and the three
-`*RAMFraction` flags.
+Between the two JDKs, counting the product flags `-XX:+PrintFlagsFinal` lists without
+unlocking diagnostic or experimental ones, 13 flags are new in 25 — among them the `AOT*`
+family and `UseCompactObjectHeaders` — and 28 are gone, including `ZGenerational` and the
+three `*RAMFraction` flags.
 
 ## Considered and not worth it here
 
@@ -306,6 +318,13 @@ running headless with four partitions, two interleaved rounds of 12 s per collec
 **JFR overhead.** Same setup with G1, three interleaved rounds of identical 12 s length:
 no recording 16,480 generations/s; `settings=default` 15,478 (−6.1%); `settings=profile`
 15,123 (−8.2%). Runs within each configuration agreed to within about 3%.
+
+**G1 and pinning on JDK 25.** OpenJDK 25.0.4.1, `-Xms256m -Xmx1g -XX:+UseG1GC
+-XX:MaxGCPauseMillis=20`, the current engine running headless with four partitions for
+20 s, recorded with `settings=profile` and the pinning threshold at 0 ms: 186 pauses,
+median 0.438 ms, P99 1.33 ms, worst 1.80 ms, 93.2 ms in total; two pins, both in class
+loading. The command and driver are under Verification in
+[`java25-migration.md`](java25-migration.md#verification).
 
 **Pixel buffer.** Heap retained by constructing `BoardView` at a device scale of 1.0:
 76 MiB at 4,000×4,000 and 391 MiB at 10,000×10,000. Both track 4·N² bytes, plus roughly

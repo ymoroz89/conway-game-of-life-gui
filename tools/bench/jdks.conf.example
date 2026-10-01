@@ -1,0 +1,60 @@
+# Template for tools/bench/jdks.conf -- copy to jdks.conf and adjust.
+#
+#   cp tools/bench/jdks.conf.example tools/bench/jdks.conf
+#
+# Format, whitespace-separated:
+#
+#   label   jenv-version-name   branch
+#
+# The label appears in tables and in every filename. The jenv name is resolved with
+# `jenv prefix` and verified again from each recording afterwards. The branch is the
+# worktree the arm builds from (irrelevant when artifacts are pre-staged; see bench.conf).
+# The runner requires AT LEAST TWO arms.
+#
+# --- traps recorded on this machine ------------------------------------------------
+#
+# USE FULLY-QUALIFIED JENV NAMES ONLY. Bare aliases go stale and can resolve to another
+# vendor entirely: `jenv prefix 25.0.4` and `jenv prefix graalvm-25` are both GraalVM,
+# which compares JIT compilers rather than JDK versions. Never put GraalVM in a
+# JDK-version matrix. Aliases also lie about patch level -- `openjdk64-21.0.11` resolves
+# to 21.0.12.1 here, which is fine but must be read from the recording, not the label.
+#
+# A `.java-version` file in the project root silently overrides `jenv global`, so every
+# arm would run the same JVM under different labels. The runner moves it aside and
+# restores it; verify it did.
+#
+# Two arms cannot check out the SAME branch through `git worktree add`. Pre-create them
+# detached and the runner will reuse them:
+#   git worktree add --detach /tmp/jdkcmp-<label> <branch>
+#
+# --- example: two questions at once, sharing an arm --------------------------------
+#
+# A pure-JVM comparison and an as-shipped comparison share their baseline, so three
+# interleaved arms answer both for fewer runs than two separate matrices -- and 25 vs 25s
+# additionally isolates the compile target with the JVM held fixed:
+#
+#   21    release-21 jar on JDK 21    <- baseline
+#   25    the SAME jar on JDK 25      <- pure JVM effect      (21 vs 25)
+#   25s   release-25 jar on JDK 25    <- upgrade as shipped   (21 vs 25s)
+#
+# Stage arms 21 and 25 with a byte-identical jar and verify with shasum, or their delta
+# is not the runtime alone.
+21   openjdk64-21.0.11   main
+25   openjdk64-25.0.3    main
+25s  openjdk64-25.0.3    java25
+
+# --- other configurations worth keeping -------------------------------------------
+#
+# A/A noise floor -- two arms, same JDK, byte-identical jar. Any delta it reports is noise
+# BY CONSTRUCTION, so it calibrates the study design itself rather than just run-to-run
+# spread, and it would catch a systematic ordering or interleaving bias. Run this BEFORE
+# trusting any small effect. On 2026-09-30 it returned +1.71% on arms that differ in
+# nothing, with a 4.70% full spread -- larger than every 21-vs-25 throughput difference
+# this project had reported.
+#   21a  openjdk64-21.0.11   main
+#   21b  openjdk64-21.0.11   main
+#
+# Single-variable code A/B -- same JDK, same commit, one line changed, artifacts staged
+# per arm. This is how the 2026-09-30 executor result was measured.
+#   fj   openjdk64-21.0.11   main
+#   vt   openjdk64-21.0.11   main

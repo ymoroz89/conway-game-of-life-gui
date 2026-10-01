@@ -2,3 +2,18 @@
 /.idea/
 /target/
 /logs/
+# Profiling artifacts stay entirely local. Recordings alone have reached ~140 MB for a
+# single round, and nothing under here is the record of a result: findings belong in
+# PROFILING-LOG.md, with the numbers written into the entry rather than left implicit in
+# a data file. A consequence worth knowing: derived JSON and results.jsonl are ignored
+# too, so a round's raw data does NOT survive a clean checkout -- quote the numbers in
+# the log entry while the data is still on disk, because it will not be there later.
+# (/profiling/* already covers subdirectories; the two patterns below are belt-and-braces
+# in case that line is ever narrowed.)
+/profiling/*
+/profiling/**/*.jfr
+/profiling/**/*.console.log
+/.java-version
+/tools/bench/*.jar
+/tools/bench/*.conf
+/tools/bench/out/drive

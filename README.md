@@ -41,8 +41,10 @@ partitions.](docs/images/screenshot.png)
   rewritten.
 - **Compiler-checked commands.** A `sealed` command hierarchy is consumed by an exhaustive
   pattern-matching `switch`: a command that is not handled does not compile.
-- **Decisions settled by measurement.** A benchmark harness with three executor modes chose
-  the executor and derived the partition rule. The numbers, and their caveats, are below.
+- **Decisions settled by measurement.** A benchmark harness with three executor modes
+  ~~chose the executor and~~ derived the partition rule. **Corrected 2026-10-01:** the
+  executor was chosen by measuring the application itself, because the harness's ranking
+  reverses there. The numbers, and their caveats, are below.
 - **122 headless tests**, including an equivalence test that runs 2 to 8 parallel bands
   against the single-threaded result.
 
@@ -116,7 +118,7 @@ its range, is ignored with a logged warning and the default is used instead.
 | `conway.gridSize` | `201` | 3–10,000 | Board width and height in cells, and the size selected on startup. A value that is not a preset is added to the board-size control rather than replaced |
 | `conway.boardSizePx` | `1000` | 50–20,000 | Target board size in pixels; cell size is `max(1, boardSizePx / gridSize)` |
 | `conway.targetFps` | `60` | 1–240 | Repaint rate, independent of the simulation rate |
-| `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | 1–`gridSize` | Upper bound for the partition control. The band workers' parallelism is `min(maxPartitions, cores)` |
+| `conway.maxPartitions` | `min(gridSize, max(2, 2 × cores))` | 1–`gridSize` | Upper bound for the partition control. ~~The band workers' parallelism is `min(maxPartitions, cores)`~~ **Corrected 2026-10-01:** it does not size the band workers. They are virtual threads, run by the JDK's scheduler at a parallelism of the core count unless `-Djdk.virtualThreadScheduler.parallelism` overrides it |
 | `conway.partitions` | `clamp(gridSize / minRowsPerPartition, 1, maxPartitions)` | 1–`maxPartitions` | Partition count for the startup board; overrides the recommendation |
 | `conway.minRowsPerPartition` | `50` | 1–`gridSize` | Rows a band needs before splitting again pays off. Retunes the startup recommendation only ([why](#how-the-default-partition-count-is-chosen)) |
 | `conway.log.dir` | `logs` | — | Directory for `conway-life.log`, rolled daily and at 10 MB, with 14 days and at most 200 MB kept |
@@ -367,16 +369,19 @@ In one line: a virtual simulation thread plus a virtual-thread executor keeps th
 generation inside one scheduler, so the wake-up is local and threads that are already awake
 do the next piece of work.
 
-Every step is in the JDK 21 source (OpenJDK 21.0.12.1, `lib/src.zip`):
+Every step is in the JDK source (`lib/src.zip`). The measurements in this section were
+taken on JDK 21, so the first column cites OpenJDK 21.0.12.1; the second cites 25.0.4.1,
+which this branch requires. JDK 25 reaches the same outcome at every step, by different code
+in the three marked †:
 
-| Step | Source |
-| --- | --- |
-| Virtual threads run on a dedicated `ForkJoinPool`, not the common pool and not the application's | `VirtualThread.java:71` (`DEFAULT_SCHEDULER`), built at `:1145–1176` with parallelism = available processors and `asyncMode = true` |
-| Starting a virtual thread submits it from the starting thread, **without** switching to the carrier — so dispatch is an outside-queue submission in both designs | `VirtualThread.java:540–560` (`start` → `submitRunContinuation`) |
-| Submission goes to the submitting thread's own local deque only if it is a worker of that same pool; otherwise to an outside submission queue | `ForkJoinPool.java:2358–2372` (`poolSubmit`: `:2363–2365` local, `:2366–2368` outside); `execute` reaches it at `:2846–2849` |
-| A virtual thread unparking another switches to its own carrier first, so the resubmission comes from a worker of the scheduler — the local deque | `VirtualThread.java:742–748`, then `:262–264` (`submitRunContinuation` → `scheduler.execute`) |
-| A platform thread unparking a virtual thread resubmits directly — an outside submission | `VirtualThread.java:750` |
-| `ForkJoinTask.get()` waits with `LockSupport.park`, not a monitor | `ForkJoinTask.java:459`, `:461` |
+| Step | JDK 21.0.12.1 | JDK 25.0.4.1 |
+| --- | --- | --- |
+| Virtual threads run on a dedicated `ForkJoinPool`, not the common pool and not the application's | `VirtualThread.java:71` (`DEFAULT_SCHEDULER`), built at `:1145–1176` with parallelism = available processors and `asyncMode = true` | `VirtualThread.java:66`, built at `:1432–1458` with the same parameters |
+| Starting a virtual thread submits it from the starting thread, **without** switching to the carrier — so dispatch is an outside-queue submission in both designs | `VirtualThread.java:540–560` (`start` → `submitRunContinuation`) | † `VirtualThread.java:689–709` → `:420–431`: started from a carrier, it calls `externalSubmit` explicitly |
+| Submission goes to the submitting thread's own local deque only if it is a worker of that same pool; otherwise to an outside submission queue | `ForkJoinPool.java:2358–2372` (`poolSubmit`: `:2363–2365` local, `:2366–2368` outside); `execute` reaches it at `:2846–2849` | † `ForkJoinPool.java:2614–2627`, which tests the *carrier* (`JLA.currentCarrierThread()`, `:2616`), so a virtual thread counts as a worker of its carrier's pool; `execute` at `:3178–3181` |
+| A virtual thread unparking another resubmits it from its own carrier — the local deque | Switches to its carrier first: `VirtualThread.java:742–748`, then `:262–264` (`submitRunContinuation` → `scheduler.execute`) | † No switch: `unpark` (`VirtualThread.java:851–861`) → `:385` → `:336–342`, which pins the continuation so the carrier cannot change while `poolSubmit` reads it |
+| A platform thread unparking a virtual thread resubmits directly — an outside submission | `VirtualThread.java:750` | `VirtualThread.java:860` → `:344`; `poolSubmit` takes the outside branch, `ForkJoinPool.java:2621–2623` |
+| `Future.get()` waits with `LockSupport.park`, not a monitor. The virtual-thread executor's futures are `FutureTask`s; the `ForkJoinPool`'s are `ForkJoinTask`s | `ThreadPerTaskExecutor.java:327–328`, `FutureTask.java:500`; `ForkJoinTask.java:459`, `:461` | `ThreadPerTaskExecutor.java:304–305`, `FutureTask.java:511`; `ForkJoinTask.java:442`, `:445` |
 
 So the difference is in the wait and the wake-up, not the submit. The virtual-thread
 scheduler is itself a work-stealing `ForkJoinPool`, so uneven bands (rule evaluation is
@@ -384,8 +389,10 @@ clipped to the active region) and the reference machine's asymmetric cores (6 pe
 4 efficiency) are still absorbed by stealing. Nothing is sized, so nothing has to be resized
 when the partition control moves.
 
-**It is not pinning.** Because `ForkJoinTask.get()` parks rather than holding a monitor, a
-virtual thread blocked on it unmounts normally. JFR with `jdk.VirtualThreadPinned` at a 0 ms
+**It is not pinning.** Because ~~`ForkJoinTask.get()`~~ `Future.get()` parks rather than
+holding a monitor, a virtual thread blocked on it unmounts normally. **Corrected
+2026-10-01:** with the virtual-thread executor the future is a `FutureTask`, not a
+`ForkJoinTask`; both park (last row above). JFR with `jdk.VirtualThreadPinned` at a 0 ms
 threshold captured zero pins on JDK 21 under both executors ([JVM tuning](#jvm-tuning)).
 
 **Not established:** the cost of each hand-off. The gap is 13.7 µs per generation (58.6 µs
@@ -414,7 +421,8 @@ context-switch events on the two arms would count them.
 
 The board is split into contiguous **row bands**. Band *k* reads the previous generation
 (which nobody is writing) and writes only its own rows of the new arrays. Because no two
-bands ever touch the same memory, the workers need no lock or atomic between themselves.
+bands ever write the same memory, and what they read is never written, the workers need no
+lock or atomic between themselves.
 
 Three details in how [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)
 runs a generation that a diagram would hide:
@@ -504,8 +512,8 @@ That describes the running simulation, not every path through the code:
   pattern — on the main thread at startup, and on the EDT when the board size changes.
 - **`close()`** joins the simulation thread, and `LifeFrame` calls it on the EDT — when the
   window closes, and when the board size changes.
-- **`Future.get()`**: the simulation thread does wait every generation — for its own band
-  workers, never for the EDT.
+- **`Future.get()`**: the simulation thread does wait in every generation split into more
+  than one band — for its own band workers, never for the EDT.
 
 So the EDT genuinely waits for the simulation in exactly two situations: closing the
 window, and changing the board size, which closes the old engine and seeds the new one,
@@ -544,10 +552,10 @@ Each feature below is used where it removes code or closes off a class of bug.
 | Records and sealed interfaces | 16, 17 | `Command`, `EngineSnapshot`, `SimulationStats`, `ActiveRegion`, `BoardSizeOption` | Closed vocabularies and immutable value types without boilerplate |
 
 Just as deliberately, some features are **not** used. `StructuredTaskScope` would make
-band-failure cleanup automatic, but it is still a preview API in JDK 21 and the project
-allows no preview features. A `RecursiveTask` decomposition would replace the band model
-that `PartitionEquivalenceTest` pins down, for a few percent. The reasoning for every
-Java ≤25 concurrency tool is in the
+band-failure cleanup automatic, but it is still a preview API — in JDK 25 (JEP 505, its
+fifth preview) as in 21 — and the project allows no preview features. A `RecursiveTask`
+decomposition would replace the band model that `PartitionEquivalenceTest` pins down, for a
+few percent. The reasoning for every Java ≤25 concurrency tool is in the
 [concurrency features review](docs/concurrency-features-review.md).
 
 ## Testing
@@ -758,9 +766,13 @@ Two health warnings on this table. It predates the per-generation band cap, so t
 right-hand columns no longer measure distinct configurations (see
 [below](#the-per-generation-band-cap)); these rows have not been re-measured since. And it
 is a different session from the tables above — which report 1.48× where this one reports
-1.15× for the same 201 board at 4 partitions. That ~29% disagreement between runs of the
-same configuration is the harness's real precision, and a good reason to trust only the
-shape of the curve.
+1.15× for the same 201 board at 4 partitions. ~~That ~29% disagreement between runs of the
+same configuration is the harness's real precision~~ **Corrected 2026-10-01:** it is not the
+same configuration. This table was recorded on 2026-07-31, when the harness had only a fixed
+pool of platform threads, every band was dispatched through `invokeAll` (the calling thread
+did not yet compute one), and the build targeted release 17. The ~29% gap mixes those
+changes with run-to-run noise, so it does not measure the harness's precision — but it is
+still a good reason to trust only the shape of the curve.
 
 The shape is clear, though: at every size the fastest result lands at roughly **fifty rows
 per band**, and the largest board is still improving when it hits the cap. That invariant
@@ -817,10 +829,14 @@ starting, and the measurements behind every recommendation — is in
 [`docs/jvm-options.md`](docs/jvm-options.md). The short version:
 
 The dominant allocation is two `boolean[]` per generation — about 80 KB on the default
-board, or roughly 1.1–1.6 GB/s at the rates measured above. That is steady, short-lived
-garbage, and G1 absorbs it easily. On the default board with a 1 GB heap, two 12-second JDK
-21 runs gave a median pause of 0.51 ms and a worst of 7.28 ms, and a 20-second JDK 25 run of
-the current engine gave 0.44 ms and 1.80 ms — every pause inside a 16.7 ms frame.
+board, or roughly 1.1–1.8 GB/s at the rates measured above (13,131 to 22,283 generations/s).
+That is steady, short-lived garbage, and G1 absorbs it easily. On the default board with a
+1 GB heap, two 12-second JDK 21 runs gave a median pause of 0.51 ms and a worst of 7.28 ms,
+and a 20-second JDK 25 run of the ~~current~~ engine gave 0.44 ms and 1.80 ms — every pause
+inside a 16.7 ms frame. **Corrected 2026-10-01:** both were recorded with the
+`ForkJoinPool` band workers (published 2026-09-24 and 2026-09-29), and neither has been
+repeated since the engine moved back to virtual threads. The two arrays are unchanged; what the move adds is a
+virtual thread per dispatched band.
 
 | Case | Flags | Why |
 | --- | --- | --- |
@@ -835,10 +851,13 @@ java -Xms256m -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -jar target/GuiLife.ja
 ```
 
 **Size the heap from the board** once it grows past the default. At N×N cells the heap
-holds, in the worst case, `8·N² + 4·N²·s²` bytes: the engine's current and next
+holds, in the worst case, `8·N² + 4·(c·N·s)²` bytes: the engine's current and next
 generations (4·N²), up to two more that `BoardView` still references (4·N²), and the pixel
-buffer at 4 bytes per pixel and device scale *s*. At the 10,000×10,000 maximum that is
-about 1.2 GB on a 1× display and 2.4 GB on a 2× one, so `-Xmx1g` is **not** enough there:
+buffer at 4 bytes per physical pixel, for a cell *c* logical pixels wide
+(`max(1, boardSizePx / N)`) at device scale *s*. From N = 501 on the default
+`conway.boardSizePx` a cell is one pixel and the last term is `4·N²·s²`, so at the
+10,000×10,000 maximum the total is about 1.2 GB on a 1× display and 2.4 GB on a 2× one, and
+`-Xmx1g` is **not** enough there:
 
 ```bash
 java -Xmx3g -XX:+UseZGC -Dconway.gridSize=10000 -jar target/GuiLife.jar   # 1× display
@@ -850,16 +869,23 @@ the GUI itself was not run at that size.
 
 **Virtual-thread pinning.** JFR recordings on JDK 21, with `jdk.VirtualThreadPinned`'s
 threshold lowered to 0 ms, captured zero pins — first when the band workers were still
-virtual threads alongside the actor, and again with the current `ForkJoinPool` workers.
-JDK 25 recordings of the current engine have captured **one or two** per run, 3–43 µs
-each, every one inside the JDK's own class loading as the first generation starts (a
-contended monitor while the simulation thread lazily loads a class) and none in the
-engine's `take()` or `Future.get()`. Only JDK 25 can see them: its version of the event
+virtual threads alongside the actor, and again with the ~~current~~ `ForkJoinPool` workers
+that shipped from 2026-09-24 to 2026-10-01. JDK 25 recordings of the ~~current~~ engine
+**with those workers** have captured **one or two** per run, 3–43 µs each, every one
+inside the JDK's own class loading as the first generation starts (a contended monitor
+while the simulation thread lazily loads a class) and none in the engine's `take()` or
+`Future.get()`. Only JDK 25 can see them: its version of the event
 also records blocking operations such as contended monitor enters — its schema adds a
 *Blocking Operation* field that JDK 21's lacks — so JDK 21's zero is narrower than it
-looks. The exact recording command and its output are in
-[`docs/java25-migration.md`](docs/java25-migration.md#verification); the JDK 21 background
-is in [`docs/java21-migration.md`](docs/java21-migration.md).
+looks. ~~The exact recording command and its output are in
+[`docs/java25-migration.md`](docs/java25-migration.md#verification)~~ **Corrected
+2026-10-01:** that section has neither, and the command was never committed; the flags and
+results are under [Evidence in `docs/jvm-options.md`](docs/jvm-options.md#evidence). The
+current engine — virtual band workers again — has not been recorded on JDK 25 at a 0 ms
+threshold; the August JDK 25 recording of the harness with virtual workers reported zero
+pins at a threshold it does not state
+([Phase 2](docs/java25-migration-plan.md#phase-2--re-baseline-on-jdk-25)). The JDK 21
+background is in [`docs/java21-migration.md`](docs/java21-migration.md).
 
 ## Further reading
 
@@ -884,7 +910,7 @@ ports to other languages:
 
 | Branch | What it holds |
 | --- | --- |
-| `main` | The JDK 21 baseline this branch is built on. The source trees are identical; `pom.xml` differs only in `maven.compiler.release` |
+| `main` | The JDK 21 baseline this branch is built on. `src/` is identical and `pom.xml` differs only in `maven.compiler.release`; the bench rig in `tools/bench/` is only on this branch |
 | `java27` | The application carried forward to JDK 27, with `StructuredTaskScope` adopted as a preview API and the build pinned to exactly JDK 27 |
 | `kotlin` | A Kotlin port, built with Gradle |
 | `rust` | A Rust port, built with Cargo |

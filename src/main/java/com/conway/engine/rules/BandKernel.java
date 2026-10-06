@@ -9,7 +9,7 @@ import com.conway.model.Generation;
  * <p>One instance serves every band of a single generation. It reads only the previous
  * generation and writes only the rows of the band it is given, so concurrent calls for
  * disjoint bands need no synchronization between them. Visibility of those writes is the
- * caller's job; {@link LifeRules} joins each band with {@code Future.get()}.
+ * caller's job; {@link LifeRules} joins each band with {@code scope.join()}.
  *
  * <p>Rule evaluation is clipped to the active region: a cell outside the padded bounding box
  * of the live cells cannot come alive, and the destination arrays are fresh, so those cells

@@ -7,10 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,12 +31,15 @@ import com.conway.model.Generation;
  * single-threaded path with itself. Each parameterized case therefore asserts the band
  * count it expects before comparing boards.
  *
- * <p>The bands run on a virtual-thread-per-task executor, the one {@code SimulationEngine}
- * ships with, so the safety net covers the dispatch path the application actually takes.
- * The test is not vacuous with respect to that executor: replacing it with one that rejects
- * every task makes nine of the ten cases fail (2026-10-01). The tenth requests 1, 0 and
- * &minus;4 partitions, which are computed inline and never dispatch, so passing regardless is
- * correct.
+ * <p>The bands are forked into a {@code StructuredTaskScope} per generation, built by the
+ * no-arg {@link LifeRules} constructor &mdash; the one {@code SimulationEngine} ships &mdash;
+ * so the safety net covers the dispatch path the application actually takes. From 2026-10-01
+ * to 2026-10-06 it did not: the engine had moved to the scope while this test still injected an
+ * {@code ExecutorService}, so the net was strung across a path nothing ran.
+ *
+ * <p>The test is not vacuous with respect to that dispatch. Making every forked band throw
+ * fails nine of the ten cases; the tenth requests 1, 0 and &minus;4 partitions, which are
+ * computed inline and never fork, so passing regardless is correct.
  */
 class PartitionEquivalenceTest {
 
@@ -49,20 +49,12 @@ class PartitionEquivalenceTest {
     private static final int GENERATIONS = 12;
     private static final long SEED = 20_260_728L;
 
-    private static ExecutorService executor;
     private static LifeRules rules;
 
     @BeforeAll
     static void setUp() {
-        executor = Executors.newVirtualThreadPerTaskExecutor();
-        rules = new LifeRules(executor);
-    }
-
-    @AfterAll
-    static void tearDown() {
-        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
-        // down and waits for it to terminate, replacing the manual shutdown block.
-        executor.close();
+        // The no-arg constructor, exactly as SimulationEngine builds it.
+        rules = new LifeRules();
     }
 
     @ParameterizedTest(name = "{0} partitions produce the single-threaded result")

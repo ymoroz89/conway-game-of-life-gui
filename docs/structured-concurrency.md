@@ -12,6 +12,15 @@ reversed, and what the reversal costs.
 > preview). This line went 25 → 27 directly, so the port landed here with the
 > JDK 27 bump and against the seventh preview's API. What changed between the two
 > is recorded under [What the seventh preview changed](#what-the-seventh-preview-changed).
+>
+> **Completed 2026-10-06.** Between 2026-09-15 and then, this document described a
+> design the code had not finished reaching. `LifeRules` carried *two* dispatch
+> paths: the scope described here, used by `SimulationEngine` and the benchmark,
+> and the old `ExecutorService` kept behind a second constructor "for
+> compatibility with existing tests". Every rules-level test used that second
+> constructor, so the shipping path was covered only indirectly and
+> `PartitionEquivalenceTest` — the central safety net — asserted its property
+> about a path nothing ran. See [Finishing the migration](#finishing-the-migration).
 
 Companion documents: [`java27-migration.md`](java27-migration.md) (the release as a
 whole), [`concurrency-features-review.md`](concurrency-features-review.md)
@@ -120,6 +129,103 @@ $ javap -public 'java.util.concurrent.StructuredTaskScope$Joiner' | grep allSucc
       allSuccessfulOrThrow();
 ```
 
+## Finishing the migration (2026-10-06)
+
+The port landed the scope but did not remove what it replaced. `LifeRules` kept a
+second constructor taking an `ExecutorService`, and with it a complete second
+dispatch implementation: `submit` the bands, compute band zero inline, collect
+`Future.get()`, and cancel the rest in a `catch (ExecutionException)`. The reason
+given was test compatibility.
+
+The cost was not the duplication. It was that **production and the tests ran
+different code**:
+
+| Caller | Path taken |
+| --- | --- |
+| `SimulationEngine`, `GenerationBenchmark` | `StructuredTaskScope` |
+| `PartitionEquivalenceTest`, `LifeRulesTest` (incl. the band-failure test) | `ExecutorService` |
+
+So the safety net whose own Javadoc said it "covers the dispatch path the
+application actually takes" covered the other one, and the band-failure contract
+was pinned against cleanup code that never ran. The scope path had only the
+indirect coverage of `SimulationEngineTest` — and most of that is a 32-row board,
+which `bandsFor` computes as a single inline band because
+`DEFAULT_MIN_ROWS_PER_PARTITION` is 50, so it forks nothing. Only
+`partitionCountsAreHonored` (420×420, up to 16 bands) reached the scope at all,
+and it asserts `state() != FAILED` and the reported partition count, never a board.
+
+What changed:
+
+- the `ExecutorService` constructor and its dispatch path are gone; one path
+  remains;
+- the failure seam moved to `BandWork`, so both failure tests fork into a real
+  scope;
+- `PartitionEquivalenceTest` and `LifeRulesTest` build `LifeRules` with the
+  no-arg constructor, exactly as `SimulationEngine` does;
+- band zero's failure no longer escapes before `join()`. It did before: leaving
+  the try-with-resources without joining is a structure violation, so `close()`
+  attached `IllegalStateException: Owner did not join after forking` as a
+  suppressed exception to every inline-band failure. The inline exception is now
+  recorded, the scope joined, and the failure thrown after;
+- the failure is produced by `Joiner.allSuccessfulOrThrow(cause -> new
+  SimulationException(...))`. Verified 2026-10-06 that the mapper receives the
+  failing band's *own* exception, not an `ExecutionException` wrapping it, so
+  nothing unwraps anything any more;
+- the scope is configured with `withName("conway-generation")` and a
+  `Thread.ofVirtual().name("conway-band-", 0)` factory;
+- `GenerationBenchmark`'s mode argument works again. From 2026-10-01 it parsed a
+  mode, printed it in the header, and ignored it — `newExecutor()` was never
+  called, so every run measured the scope whatever the label said. The mode now
+  selects the band `ThreadFactory`; `forkjoin` is gone, because a scope cannot
+  fork into a `ForkJoinPool`.
+
+### What the scope makes visible
+
+A JSON thread dump taken while a scope is open (`jcmd <pid> Thread.dump_to_file
+-format=json`) shows the bands as a container of their own, owned by the thread
+that forked them:
+
+```
+container: conway-generation/jdk.internal.misc.ThreadFlock$ThreadContainerImpl@…
+  owner: tid=25   (conway-simulation)
+  - conway-band-0   tid=27
+  - conway-band-1   tid=29
+  - conway-band-2   tid=30
+```
+
+With a shared executor the band threads appear as unrelated pool entries. This is
+what `withName` and the named factory buy, and the naming measured free (below).
+
+### Re-measured after the cleanup
+
+Same rig as the earlier tables but with the application's topology, which the
+README's ["why the harness and the application disagree"](../README.md#why-the-harness-and-the-application-disagree)
+section shows is the axis that decides band-threading questions: `next()` called
+from a **virtual** thread, 201×201 at 4 partitions, 50,000 generations × 7
+repetitions, arms interleaved within one JVM.
+
+Scope path against the `ExecutorService` path it replaced — both still present in
+the build at the time, selected by constructor, so nothing but the dispatch
+differs:
+
+| Run | `StructuredTaskScope` | virtual-thread executor | Δ |
+| --- | --- | --- | --- |
+| 1 | 22,645 (22,086–22,760) | **23,496** (22,925–23,570) | −3.6% |
+| 2 | 22,341 (21,428–22,524) | **22,987** (22,482–23,245) | −2.8% |
+
+Reproducible, with near-disjoint ranges: **the scope costs about 3% here**, and
+that is the price this adoption accepts. An 801×16 comparison was attempted and
+discarded — its ranges (2,674–3,969 against 2,381–3,890) overlap almost entirely,
+so the 10.5% median gap it showed is not a result.
+
+The rewritten path against the pre-cleanup scope path, same rig: 22,064 / 21,858
+/ 22,596 against the 22,645 / 22,341 above — unchanged within noise. The
+`Joiner` mapper and the scope name cost nothing measurable.
+
+Named against unnamed band factories, three runs: 22,064 / 21,858 / 22,596 named
+against 22,463 / 22,377 / 22,534 unnamed. Ranges overlap heavily and the order
+flips in the third run, so the names are free.
+
 ## Failure semantics
 
 Band zero is the one thing the scope does not manage: it runs on the owner
@@ -157,15 +263,20 @@ from a plain `ThreadFactory` and there is nothing to intercept between `fork`
 and the task, so that trick has no equivalent.
 
 The seam moved into `LifeRules`: a package-private constructor takes a
-`BandComputation` (`(grid, fromRow, toRow) -> BandResult`), defaulting to
-`LifeRules::computeBand`. It exists for the tests, and is documented as such.
+`BandWork` (`(kernel, fromRow, toRow) -> BandResult`), defaulting to
+`BandKernel::computeBand`. It exists for the tests, and is documented as such.
 Two things make it a fair price rather than a hole:
 
-- `computeBand`'s nine positional parameters collapsed into one `BandGrid`
-  record (the buffers, the dimensions, the padded active region), which is a
-  readability win the seam only made necessary to formalise;
+- it leaves the real dispatch in place. A test injecting a failing `BandWork`
+  still forks into a real scope, so the failure path it pins is the one that
+  ships — which is exactly what the executor seam stopped being;
 - the inline band became injectable for the first time, which is why there are
   now two failure tests where there was one.
+
+**Corrected 2026-10-06** — this section described a `BandComputation` taking a
+`BandGrid` record of nine collapsed parameters. That is the `java26` branch's
+shape; on this branch the per-band state already lived in `BandKernel`, so the
+seam is `BandWork` over that.
 
 ## The price of preview
 
@@ -259,10 +370,14 @@ java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmar
 
 ## Verification
 
-- [x] `mvn -B clean test` on JDK 27 — **126 tests, 0 failures**
+- [x] `mvn -B clean verify` on JDK 27 — **124 tests, 0 failures** (123 before
+      2026-10-06; the inline-band failure test is the addition). *Corrected
+      2026-10-06 — this line read 126, which no run of this suite has produced.*
 - [x] `mvn clean package` — shaded jar builds
-- [x] `PartitionEquivalenceTest` green unchanged — the board is still identical
-      at every partition count, which is the property the rewrite most risked
+- [x] `PartitionEquivalenceTest` green **and pointed at the shipping path** —
+      the board is still identical at every partition count, which is the
+      property the rewrite most risked. Vacuity re-checked against that path on
+      2026-10-06: making every forked band throw fails nine of its ten cases
 - [x] Both failure tests green — forked and inline bands still surface as
       `SimulationException` with the band's own cause, now via the joiner's
       exception-supplying function
@@ -279,6 +394,27 @@ java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmar
       scopes opened and closed per second for a minute and a half, followed by
       single steps, clear and quit with no error, no exception and no shutdown
       warning. The scope-per-generation allocation does not accumulate anything
+
+### Verified again after the cleanup (2026-10-06)
+
+- [x] `mvn -B clean verify` — 124 tests, 0 failures; shaded jar builds
+- [x] One dispatch path only: no `ExecutorService`, `Future` or `ExecutionException` remains
+      in `src/main` or `src/test`
+- [x] `PartitionEquivalenceTest` and both failure tests run through the no-arg constructor,
+      i.e. the path `SimulationEngine` uses
+- [x] Vacuity of the safety net re-checked against that path: every forked band throwing
+      fails 9 of its 10 cases
+- [x] `GenerationBenchmark`'s mode is honoured again, and provably so — `virtual` measured
+      19,068 generations/s at 201/2 against `platform`'s 6,695 (0.50× the single-band
+      baseline, three OS thread creations per generation). Before the fix both labels
+      produced the same numbers. An unknown mode now throws instead of being ignored
+- [x] Scope structure visible in a JSON thread dump: a `conway-generation/…` container owned
+      by `conway-simulation`, holding `conway-band-N` threads
+- [x] **Application soak through the real window** (`tools/bench/drive/GuiDrive`, JDK 27,
+      shaded jar): **1,500,112 generations in 73.7 s — 20,359 generations/s**, then a clean
+      pause, with no exception and no shutdown warning. That is roughly 20,400 scopes opened
+      and closed per second for a minute and a quarter, about 1.5 million in all; nothing
+      accumulates
 
 ## When to revisit
 

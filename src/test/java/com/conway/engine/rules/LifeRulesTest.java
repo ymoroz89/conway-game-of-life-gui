@@ -11,15 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.function.IntPredicate;
 
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,20 +21,13 @@ import com.conway.model.Generation;
 
 class LifeRulesTest {
 
-    private static ExecutorService executor;
     private static LifeRules rules;
 
     @BeforeAll
     static void setUp() {
-        executor = Executors.newFixedThreadPool(4);
-        rules = new LifeRules(executor);
-    }
-
-    @AfterAll
-    static void tearDown() {
-        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
-        // down and waits for it to terminate, replacing the manual shutdown block.
-        executor.close();
+        // The no-arg constructor is what SimulationEngine ships: bands are forked into a
+        // StructuredTaskScope per generation. There is no pool, so nothing to tear down.
+        rules = new LifeRules();
     }
 
     @Test
@@ -291,51 +277,69 @@ class LifeRulesTest {
     }
 
     @Test
-    @DisplayName("A failing dispatched band is reported as SimulationException with the worker's own cause")
-    void failingDispatchedBandSurfacesWrapped() throws Exception {
-        // Band zero runs on the calling thread and cannot be made to fail from outside,
-        // so the injection hits every dispatched band. The contract this pins is the one
-        // the engine relies on: however a generation fails, it escapes as a
-        // SimulationException whose cause is the worker's own exception, so the engine's
-        // single failure path produces the same diagnostic no matter which band broke.
-        try (ExecutorService failing = failingBandExecutor()) {
-            LifeRules failingRules = new LifeRules(failing);
-            // Dense and tall enough that the requested count is honored: 120 active rows
-            // allow two bands of 50+ rows, so exactly one task is dispatched and one runs
-            // inline, and the dispatched one fails.
-            Generation start = random(120, 120, new Random(42L), 0.35d);
+    @DisplayName("A failing forked band is reported as SimulationException with the band's own cause")
+    void failingForkedBandSurfacesWrapped() throws Exception {
+        // The contract this pins is the one the engine relies on: however a generation fails,
+        // it escapes as a SimulationException whose cause is the band's own exception, so the
+        // engine's single failure path produces the same diagnostic no matter which band broke.
+        // Here the failure happens on a forked band, inside the scope, and has to survive the
+        // Joiner's exception mapping unchanged.
+        LifeRules failingRules = rulesFailingOn(fromRow -> fromRow != 0);
 
-            SimulationException failure = assertThrows(SimulationException.class,
-                    () -> failingRules.next(start, 4));
+        SimulationException failure = assertThrows(SimulationException.class,
+                () -> failingRules.next(denseBoard(), 4));
 
-            assertEquals(INJECTED_FAILURE_MESSAGE, failure.getCause().getMessage());
-            assertInstanceOf(IllegalStateException.class, failure.getCause());
-        }
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(INJECTED_FAILURE_MESSAGE, failure.getCause().getMessage());
+    }
+
+    @Test
+    @DisplayName("A failing inline band is reported the same way, and takes precedence")
+    void failingInlineBandSurfacesWrapped() throws Exception {
+        // Band zero runs on the owner thread, outside the scope's cancellation reach, so its
+        // failure travels a different path: recorded, the scope joined anyway, then thrown.
+        // What the engine sees must be indistinguishable from the forked case above.
+        //
+        // Joining matters here. Leaving the scope without joining is a structure violation, and
+        // close() then reports "Owner did not join after forking" instead of the real failure.
+        LifeRules failingRules = rulesFailingOn(fromRow -> true);
+
+        SimulationException failure = assertThrows(SimulationException.class,
+                () -> failingRules.next(denseBoard(), 4));
+
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(INJECTED_FAILURE_MESSAGE, failure.getCause().getMessage());
+        // The forked bands failed too; their failure rides along as suppressed rather than
+        // replacing the inline cause or vanishing. A structure violation would show up here.
+        assertEquals(1, failure.getSuppressed().length,
+                "the forked bands' failure should be suppressed onto the inline one");
+        assertInstanceOf(SimulationException.class, failure.getSuppressed()[0]);
     }
 
     /**
-     * An executor whose workers always fail, so any dispatched band throws on arrival.
+     * Rules whose bands throw when {@code failingBandStart} accepts their first row.
      *
-     * <p>LifeRules.next() dispatches with {@code executor.submit(Callable)}; replacing the
-     * task with one that throws simulates a worker crashing inside {@code computeBand} while
-     * keeping the failure on the worker thread, which is what exercises the
-     * {@code ExecutionException} wrapping path.
+     * <p>The first row identifies the band: zero is the one computed inline on the calling
+     * thread, anything else was forked into the scope. Substituting the band computation is the
+     * seam {@code LifeRules} exposes for exactly this, and unlike the executor it replaced it
+     * leaves the real dispatch path in place — these tests drive the same code the application
+     * runs.
      */
-    private static ExecutorService failingBandExecutor() {
-        return new ThreadPoolExecutor(
-                0, 4, 1L, TimeUnit.MINUTES, new SynchronousQueue<Runnable>()) {
-            @Override
-            public <T> Future<T> submit(Callable<T> task) {
-                // Discard the real task and substitute one that throws. The anonymous call
-                // avoids a raw-super call and keeps the lambda as Callable<T>.
-                return super.submit(new Callable<T>() {
-                    @Override
-                    public T call() {
-                        throw new IllegalStateException(INJECTED_FAILURE_MESSAGE);
-                    }
-                });
+    private static LifeRules rulesFailingOn(IntPredicate failingBandStart) {
+        return new LifeRules(Thread.ofVirtual().factory(), (kernel, fromRow, toRow) -> {
+            if (failingBandStart.test(fromRow)) {
+                throw new IllegalStateException(INJECTED_FAILURE_MESSAGE);
             }
-        };
+            return kernel.computeBand(fromRow, toRow);
+        });
+    }
+
+    /**
+     * Dense and tall enough that the requested partition count is honored: 120 active rows
+     * allow two bands of 50+ rows, so exactly one band is forked and one runs inline.
+     */
+    private static Generation denseBoard() {
+        return random(120, 120, new Random(42L), 0.35d);
     }
 
     private static final String INJECTED_FAILURE_MESSAGE = "injected band failure";

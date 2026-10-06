@@ -28,11 +28,14 @@ partitions.](docs/images/screenshot.png)
 - **Lock-free read path.** Each generation is published together with its statistics as one
   immutable `EngineSnapshot`, through one `volatile` field. The event dispatch thread reads
   it without a lock and can never observe a half-built board.
-- **Data-parallel generations.** Row bands run as virtual threads, on the same scheduler as
-  the simulation thread that waits on them, while it computes one band itself;
-  `Future.get()` supplies the happens-before edge. Measured in the application, the
-  dedicated `ForkJoinPool` this replaced was 23.4% slower; virtual threads are 30.6% faster
-  ([why](#two-kinds-of-work-one-scheduler)).
+- **Data-parallel generations, structurally scoped.** Each generation's row bands are forked
+  into one `StructuredTaskScope` as virtual threads, on the same scheduler as the simulation
+  thread that waits on them, while it computes one band itself; `scope.join()` supplies the
+  happens-before edge. A band cannot outlive its generation, and one that throws cancels its
+  siblings. Measured in the application, the dedicated `ForkJoinPool` this replaced was 23.4%
+  slower; virtual threads are 30.6% faster ([why](#two-kinds-of-work-one-scheduler)). The
+  scope itself costs about 3% and pins the build to JDK 27, deliberately
+  ([the trade](docs/structured-concurrency.md)).
 - **Work sized to the live area.** Rule evaluation is clipped to a padded bounding box of the
   live cells, and the band count is capped by how many rows that box spans, so a small
   pattern on a large board runs inline instead of being split into empty bands.
@@ -44,12 +47,12 @@ partitions.](docs/images/screenshot.png)
   rewritten.
 - **Compiler-checked commands.** A `sealed` command hierarchy is consumed by an exhaustive
   pattern-matching `switch`: a command that is not handled does not compile.
-- **Decisions settled by measurement.** A benchmark harness with three executor modes
-  ~~chose the executor and~~ derived the partition rule. **Corrected 2026-10-01:** the
-  executor was chosen by measuring the application itself, because the harness's ranking
-  reverses there. The numbers, and their caveats, are below.
-- **122 headless tests**, including an equivalence test that runs 2 to 8 parallel bands
-  against the single-threaded result.
+- **Decisions settled by measurement.** A benchmark harness with ~~three executor~~ two
+  band-thread modes ~~chose the executor and~~ derived the partition rule. **Corrected
+  2026-10-01:** the executor was chosen by measuring the application itself, because the
+  harness's ranking reverses there. The numbers, and their caveats, are below.
+- **124 headless tests**, including an equivalence test that runs 2 to 8 parallel bands
+  against the single-threaded result, through the same dispatch path the application uses.
 
 ## Contents
 
@@ -178,8 +181,8 @@ outside the simulation thread ever touches the board.
 | Thread | Kind | Work | Blocks on |
 | --- | --- | --- | --- |
 | Event dispatch thread | Swing | Input, the render timer, all painting | Nothing in steady state; `sync()` and `close()` only when the board size changes or the window closes |
-| `conway-simulation` | Virtual | Owns the board, applies commands, computes band 0 of each generation, publishes snapshots | `take()` while paused; `Future.get()` on its band workers while running |
-| Band workers | Virtual, one per band (`newVirtualThreadPerTaskExecutor`), on the simulation thread's scheduler | Bands 1…N−1 of each generation | Never — pure CPU |
+| `conway-simulation` | Virtual | Owns the board, applies commands, computes band 0 of each generation, publishes snapshots | `take()` while paused; `scope.join()` on its band workers while running |
+| `conway-band-N` | Virtual, one per band, forked into a `StructuredTaskScope` owned by the simulation thread and running on its scheduler | Bands 1…N−1 of each generation | Never — pure CPU |
 | `main` | Platform | Reads configuration, builds the engine, seeds the first board, hands off to the EDT | `sync()`, once, until the seed is on the board |
 
 ### Components
@@ -188,14 +191,14 @@ outside the simulation thread ever touches the board.
 | --- | --- |
 | [`SimulationEngine`](src/main/java/com/conway/engine/SimulationEngine.java) | The actor. Owns the board, drains the command queue, publishes snapshots |
 | [`Command`](src/main/java/com/conway/engine/Command.java) | The sealed vocabulary: a `Signal` enum for data-free commands, records for the rest |
-| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Schedules a generation: splits it into row bands, runs them on a borrowed executor, assembles the result |
+| [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java) | Schedules a generation: splits it into row bands, forks them into one `StructuredTaskScope`, assembles the result |
 | [`BandKernel`](src/main/java/com/conway/engine/rules/BandKernel.java) | The hot loop: applies the rules to one band of rows, clipped to the active region |
 | [`PartitionPlanner`](src/main/java/com/conway/engine/rules/PartitionPlanner.java) | The measured rows-per-band rule, both for the default partition count and for the per-generation band cap |
 | [`Generation`](src/main/java/com/conway/model/Generation.java) | The immutable board: flat `boolean[]` alive and ever-alive flags (handed out unwrapped, read-only by contract), active region, population |
 | [`EngineSnapshot`](src/main/java/com/conway/engine/support/EngineSnapshot.java) | A generation and its [`SimulationStats`](src/main/java/com/conway/engine/support/SimulationStats.java), published as one unit |
 | [`LifeFrame`](src/main/java/com/conway/ui/LifeFrame.java) | The window: controls, status bar and render timer. Translates gestures into commands |
 | [`BoardView`](src/main/java/com/conway/ui/BoardView.java) | The incremental pixel renderer and pointer-to-cell mapping |
-| [`GenerationBenchmark`](src/main/java/com/conway/bench/GenerationBenchmark.java) | Headless throughput harness with three executor modes |
+| [`GenerationBenchmark`](src/main/java/com/conway/bench/GenerationBenchmark.java) | Headless throughput harness with two band-thread modes (`virtual`, `platform`) |
 
 The grid is bounded, not toroidal: neighbors off the edge count as dead. Patterns are
 data — plaintext [`.cells`](src/main/resources/patterns) resources — not hard-coded index
@@ -340,7 +343,7 @@ messages.
 ### Two kinds of work, one scheduler
 
 The simulation thread spends its life blocked — in `take()` while paused, in
-`Future.get()` while its band workers finish — so it is a **virtual thread**: it unmounts
+`scope.join()` while its band workers finish — so it is a **virtual thread**: it unmounts
 from its carrier while blocked and costs nothing while idle. Virtual threads are daemon
 threads, so the JVM can still exit if a shutdown path is missed.
 
@@ -370,20 +373,27 @@ ForkJoinPool (shipped 2026-09-24 to 2026-10-01) — two pools
         ▼
   back to the JDK scheduler        ← crosses over and back every generation
 
-Virtual-thread executor (shipped since 2026-10-01) — one pool
+Virtual bands (virtual-thread executor 2026-10-01, a StructuredTaskScope since
+2026-10-06) — one pool
 
   [JDK virtual-thread scheduler: one carrier per core (10 here), each with its own queue]
         simulation thread + all bands here
-        • submit 3 bands     → this same pool's outside queue
+        • fork 3 bands       → this same pool's outside queue
         • simulation thread waits
                              → its carrier is free to pick up a band instead of idling
         • band finishes      → the simulation thread is queued on that same,
                                already-awake carrier, via the carrier's local queue
 ```
 
-In one line: a virtual simulation thread plus a virtual-thread executor keeps the whole
+In one line: a virtual simulation thread plus virtual bands keeps the whole
 generation inside one scheduler, so the wake-up is local and threads that are already awake
 do the next piece of work.
+
+This is why the move to `StructuredTaskScope` on 2026-10-06 did not disturb the picture: the
+scope is configured with a *virtual* thread factory, so the bands land on the same scheduler
+they always did. The scope changed who owns the bands and what happens when one fails, not
+where they run. What it did cost is about 3% at 201/4, measured — see
+[`docs/structured-concurrency.md`](docs/structured-concurrency.md#re-measured-after-the-cleanup).
 
 Every step is in the JDK source (`lib/src.zip`). The measurements in this section were
 taken on JDK 21, so the first column cites OpenJDK 21.0.12.1; the second cites 25.0.4.1,
@@ -443,12 +453,14 @@ lock or atomic between themselves.
 Three details in how [`LifeRules`](src/main/java/com/conway/engine/rules/LifeRules.java)
 runs a generation that a diagram would hide:
 
-- **The caller works too.** The simulation thread does not just dispatch and wait. It
-  submits bands 1..N−1 to the executor and then computes **band 0 itself**, so it does
-  useful work instead of parking for the whole generation.
-- **Joining is what makes the result safe to read.** `Future.get()` blocks until that band
-  is done *and* establishes a happens-before edge, which is the guarantee that the
-  worker's writes are visible to the joining thread. Band 0 needs no join because the
+- **The caller works too.** The simulation thread does not just fork and wait. It forks
+  bands 1..N−1 into the scope and then computes **band 0 itself**, so it does
+  useful work instead of parking for the whole generation. Band 0 is also the one band the
+  scope cannot manage: it runs on the owner thread, so its failure is handled by hand — see
+  [`docs/structured-concurrency.md`](docs/structured-concurrency.md#failure-semantics).
+- **Joining is what makes the result safe to read.** `scope.join()` blocks until every
+  forked band is done *and* establishes a happens-before edge, which is the guarantee that
+  the workers' writes are visible to the joining thread. Band 0 needs no join because the
   same thread wrote it.
 - **Failure is loud.** If any band throws, the bands still pending are canceled and the
   generation is abandoned as a `SimulationException` — never published half-computed.
@@ -545,13 +557,14 @@ thread has not stopped within 5 seconds, interrupts it and waits up to 5 more.
 | Torn read | Observing a mix of old and new values because the update was not atomic as a whole |
 | Visibility | Whether one thread's write is guaranteed to be seen by another. Not automatic in Java |
 | Safe publication | Writing a reference to a `volatile` field so readers see a fully constructed object |
-| Happens-before | The JMM ordering guarantee that makes one thread's writes visible to another. Supplied here by `volatile` writes and `Future.get()` |
+| Happens-before | The JMM ordering guarantee that makes one thread's writes visible to another. Supplied here by `volatile` writes and `scope.join()` |
 | Actor | One thread owns mutable state; everyone else sends it messages instead of calling it |
 | Single-writer principle | Only one thread ever mutates a piece of state, so reads need no lock |
 | Virtual thread | A thread, final since JDK 21, that unmounts from its carrier while blocked, so idle ones cost almost nothing |
 | Carrier thread | The platform thread a virtual thread runs on while mounted. The JDK's virtual-thread scheduler is a `ForkJoinPool` of them, separate from any pool the application creates |
 | Work stealing | An idle `ForkJoinPool` worker takes tasks queued for a busy one, so uneven work does not leave cores idle. The virtual-thread scheduler steals, which is how uneven bands are balanced here |
 | Active region | The bounding box of the live cells, padded by one. Rule evaluation is clipped to it, and it caps the band count |
+| Structured concurrency | Tasks forked into a scope that cannot outlive it: the scope waits for or cancels every one before it closes, so a task's lifetime is bounded by a block of code rather than by a pool's lifetime |
 
 ## Modern Java, where it earns its place
 
@@ -559,19 +572,25 @@ Each feature below is used where it removes code or closes off a class of bug.
 
 | Feature | Since | Where | What it buys |
 | --- | --- | --- | --- |
-| Virtual threads (JEP 444) | 21 | The simulation thread and the band workers in `SimulationEngine` | A thread that is blocked most of its life costs nothing while idle, and bands on the same scheduler as the thread waiting on them make each generation's hand-off cheap |
+| `StructuredTaskScope` (JEP 533, **preview**) | 27 | `LifeRules.computeBands` — one scope per multi-band generation | A band cannot outlive the generation that forked it, and a failing band cancels its siblings, so the hand-rolled cancellation is gone. Its `Joiner` maps the failure straight to `SimulationException`. Price: the JDK pin below and ~3% at 201/4 |
+| Virtual threads (JEP 444) | 21 | The simulation thread; the band factory the scope forks from | A thread that is blocked most of its life costs nothing while idle, and bands on the same scheduler as the thread waiting on them make each generation's hand-off cheap |
 | Pattern matching for `switch` (JEP 441) | 21 | `SimulationEngine.handle` | Exhaustive dispatch over the sealed `Command` hierarchy |
 | Record patterns (JEP 440) | 21 | `SimulationEngine.releasePendingBarriers` | Matches and destructures `Barrier(CountDownLatch latch)` in one step |
 | Sequenced collections (JEP 431) | 21 | `Pattern.parse` | `getLast()` and `removeLast()` to trim trailing blank rows |
 | `Math.clamp` | 21 | `SimulationEngine.setPartitions`, `PartitionPlanner.recommend` and `bandsFor`, `FlatButton` | One call per range check, for partition counts and color channels |
-| `ExecutorService` as `AutoCloseable` | 19 | `SimulationEngine.close`, `GenerationBenchmark` | Shutdown and await in a single call |
+| ~~`ExecutorService` as `AutoCloseable`~~ | 19 | ➡️ Retired 2026-10-06 | Was shutdown-and-await in a single call. There is no `ExecutorService` left anywhere: the scope owns its threads, and `SimulationEngine.close()` has nothing to drain |
 | Records and sealed interfaces | 16, 17 | `Command`, `EngineSnapshot`, `SimulationStats`, `ActiveRegion`, `BoardSizeOption` | Closed vocabularies and immutable value types without boilerplate |
 
-Just as deliberately, some features are **not** used. `StructuredTaskScope` would make
-band-failure cleanup automatic, but it is still a preview API — in JDK 25 (JEP 505, its
-fifth preview) as in 21 — and the project allows no preview features. A `RecursiveTask`
-decomposition would replace the band model that `PartitionEquivalenceTest` pins down, for a
-few percent. The reasoning for every Java ≤25 concurrency tool is in the
+**Corrected 2026-10-06.** This paragraph read: ~~"some features are **not** used.
+`StructuredTaskScope` would make band-failure cleanup automatic, but it is still a preview
+API … and the project allows no preview features."~~ The no-preview policy was waived
+deliberately and the scope was adopted; it is still preview (JEP 533, seventh), the build is
+pinned to exactly JDK 27, and it costs about 3% on the default board. The argument for
+paying that is in [`docs/structured-concurrency.md`](docs/structured-concurrency.md).
+
+Other features stay out on their own merits. A `RecursiveTask` decomposition would replace
+the band model that `PartitionEquivalenceTest` pins down, for a few percent. The reasoning
+for every Java ≤27 concurrency tool is in the
 [concurrency features review](docs/concurrency-features-review.md).
 
 ## Testing
@@ -580,7 +599,7 @@ few percent. The reasoning for every Java ≤25 concurrency tool is in the
 mvn test
 ```
 
-122 tests in 12 classes, all headless: Surefire sets `java.awt.headless=true`, so the UI
+124 tests in 12 classes, all headless: Surefire sets `java.awt.headless=true`, so the UI
 tests need no display.
 
 The load-bearing test is
@@ -588,14 +607,20 @@ The load-bearing test is
 Partitioning is a work-distribution concern, so the resulting board must not depend on how
 many bands the work was split into. The test runs every band count from 2 to 8 on a
 401×401 random board, and six bands on a non-square board 131 cells wide and 307 tall,
-comparing each generation with the single-threaded result, on the same
-virtual-thread-per-task executor the engine uses. That catches off-by-one errors at band
-boundaries, rows computed twice or skipped, and accidental sharing of mutable state between
-workers. Each of those cases first asserts that the band count it asked for is the one that
-actually runs, so the test cannot quietly degrade into comparing the inline path with
-itself. It also depends on the executor: swapping in one that rejects every task fails nine
-of its ten cases (2026-10-01); the tenth only requests 1, 0 and −4 partitions, which never
-dispatch.
+comparing each generation with the single-threaded result, through the
+same no-arg `LifeRules` constructor the engine uses — so the bands really are forked into a
+`StructuredTaskScope`. That catches off-by-one errors at band boundaries, rows computed twice
+or skipped, and accidental sharing of mutable state between workers. Each of those cases
+first asserts that the band count it asked for is the one that actually runs, so the test
+cannot quietly degrade into comparing the inline path with itself. It also depends on the
+dispatch: making every forked band throw fails nine of its ten cases (verified 2026-10-06);
+the tenth only requests 1, 0 and −4 partitions, which never fork.
+
+**Corrected 2026-10-06.** From 2026-10-01 to 2026-10-06 this test injected an
+`ExecutorService` while the engine used a scope, so the sentence above — that it covers the
+path the application takes — was false, and the vacuity check measured the wrong path.
+Both are now true again; the history is in
+[`docs/structured-concurrency.md`](docs/structured-concurrency.md#finishing-the-migration-2026-10-06).
 
 | Suite | Pins down |
 | --- | --- |
@@ -616,30 +641,37 @@ java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmar
 ```
 
 Arguments, all optional: grid size (default 201), generations per measurement (default
-300), and the executor — `platform` (the default), `virtual`, or `forkjoin`. The harness
+300), and the band threads — `virtual` (the default) or `platform`. The harness
 seeds the same two-gun board the application starts with, and measures partition counts
 1, 2, 4, 8 and so on, doubling up to the application's own default cap,
 `min(gridSize, max(2, 2 × cores))`, plus that maximum itself.
 
-The default executor is **not** the path the application takes. `SimulationEngine` uses a
-virtual-thread-per-task executor, which is the harness's `virtual` mode:
+The default mode is the one the application ships: named virtual threads, which is what the
+per-generation scope forks from. `platform` is a comparator only — a scope owns the threads it
+creates, so that mode starts a fresh OS thread per band per generation with no pool behind it,
+and it is not comparable to the pooled `platform` figures recorded before 2026-10-06. It is
+also now visibly a bad idea, which is the useful thing about keeping it: on 201×201 at
+2 partitions, 3000 generations (2026-10-06), `virtual` measured 19,068 generations/s against
+`platform`'s 6,695 — **0.50× the single-band baseline**, i.e. parallelism that loses to doing
+the work inline, because each generation pays for three OS thread creations.
 
-```bash
-java --enable-preview -cp target/GuiLife.jar com.conway.bench.GenerationBenchmark 201 300 virtual
-```
-
-**But no mode reproduces the application, and the harness cannot rank executors for it.**
+**No mode reproduces the application, and the harness cannot rank band threading for it.**
 The harness calls `next()` from `main`, a platform thread; the application calls it from its
-virtual simulation thread. That difference reverses which executor wins: in the application
-the `ForkJoinPool` is 23.4% slower on the default board
+virtual simulation thread. That difference reverses which arrangement wins: in the application
+the `ForkJoinPool` was 23.4% slower on the default board
 ([why](#why-the-harness-and-the-application-disagree)). Use the harness for
-the shape of the partition curve, not for the choice of executor.
+the shape of the partition curve, not for the choice of band threading.
 
-The three modes exist so that a change of executor is settled by measurement rather than
-by argument — which is how both the move to virtual threads and the later move away from
-them were decided. ~~The move away~~ **Corrected 2026-10-01:** the move away, on
-2026-09-24, was decided on this harness and reversed once it was measured in the
-application.
+The modes exist so that such a change is settled by measurement rather than by argument —
+which is how both the move to virtual threads and the later move away from them were decided.
+~~The move away~~ **Corrected 2026-10-01:** the move away, on 2026-09-24, was decided on this
+harness and reversed once it was measured in the application.
+
+**Corrected 2026-10-06.** The `forkjoin` mode is gone: a scope creates its own threads from a
+`ThreadFactory` and cannot fork into a `ForkJoinPool`. It had in any case been inert since
+2026-10-01 — the harness parsed the mode, printed it in its header, and then ignored it, so
+every run measured the scope whatever label it displayed. The mode now selects the band
+`ThreadFactory` and is honoured.
 
 > **Read the numbers as indicative, not precise.** The harness warms up, resets to an
 > identical board before each measurement and takes the best of five — enough to show
@@ -689,6 +721,14 @@ boards, [below](#how-the-default-partition-count-is-chosen).
 > simulation thread, and that is what decides which executor wins. The original analysis is
 > kept as a record; [what the application measured](#what-the-application-measured) and
 > [why the two disagree](#why-the-harness-and-the-application-disagree) follow it.
+>
+> **Superseded 2026-10-06: there is no executor to choose.** Bands are forked into a
+> `StructuredTaskScope`, which creates its own threads from a `ThreadFactory`, so the knob
+> is now *what kind of thread a band is* (virtual, as before) rather than *which pool runs
+> it*. The scheduler finding below is exactly why that factory is a virtual one, so the
+> reasoning survives the change intact. The scope's own cost was measured separately — about
+> 3% at 201/4, in the application's topology
+> ([numbers](docs/structured-concurrency.md#re-measured-after-the-cleanup)).
 
 The band workers never block, so the choice of executor is a question about dispatch cost
 and load balancing~~, not about concurrency~~ — and, it turned out, about which scheduler

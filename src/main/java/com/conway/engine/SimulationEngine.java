@@ -54,21 +54,22 @@ import com.conway.model.Pattern;
  *
  * <h2>Threads</h2>
  * The simulation thread is a <em>virtual</em> thread: it spends its life blocked in
- * {@code take()}/{@code Future.get()}, so it unmounts from any carrier while blocked and
+ * {@code take()}/{@code scope.join()}, so it unmounts from any carrier while blocked and
  * costs nothing while idle. Virtual threads are daemon by
  * default, so the JVM can still exit if a shutdown path is missed.
  *
- * <p>The band workers are a <em>virtual-thread-per-task</em> executor, and that follows
- * from the paragraph above: the thread that dispatches the bands and then waits on them is
- * virtual, so the bands run on the same scheduler it does. The work is pure CPU, which is
- * not what virtual threads are usually for, but on the default board the cost that
- * dominates is the hand-off, not the band: a band is about 10,000 cells, and three are
- * dispatched per generation, tens of thousands of times a second. On one scheduler the
- * hand-off stays cheap:
+ * <p>The band workers are <em>virtual threads</em>, forked per band into a
+ * {@link java.util.concurrent.StructuredTaskScope} that {@link com.conway.engine.rules.LifeRules}
+ * opens and closes within one generation. That they are virtual follows from the paragraph
+ * above: the thread that forks the bands and then waits on them is virtual, so the bands run
+ * on the same scheduler it does. The work is pure CPU, which is not what virtual threads are
+ * usually for, but on the default board the cost that dominates is the hand-off, not the
+ * band: a band is about 10,000 cells, and three are forked per generation, tens of thousands
+ * of times a second. On one scheduler the hand-off stays cheap:
  *
  * <ul>
  *   <li><strong>The waiter's carrier is reused.</strong> When the simulation thread blocks
- *       in {@code Future.get()} it unmounts, and its carrier is free in the same pool as
+ *       in {@code scope.join()} it unmounts, and its carrier is free in the same pool as
  *       the bands, so it can run one instead of idling.
  *   <li><strong>The wake-up is local.</strong> A band that finishes unparks the simulation
  *       thread from its own carrier: {@code VirtualThread.unpark} switches to the carrier

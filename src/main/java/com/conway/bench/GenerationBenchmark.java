@@ -3,9 +3,7 @@ package com.conway.bench;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 import com.conway.engine.rules.LifeRules;
@@ -22,33 +20,33 @@ import com.conway.model.PatternLoader;
  * metric was computed from millisecond wall-clock timing with integer division, so it
  * reported zero for any run shorter than a second.
  *
- * <p>Run it with {@code java -cp target/classes com.conway.bench.GenerationBenchmark}
- * or from the shaded jar. Optional arguments: grid size, generations per measurement,
- * and an executor mode.
+ * <p>Run it with {@code java --enable-preview -cp target/classes
+ * com.conway.bench.GenerationBenchmark} or from the shaded jar; the flag is required because
+ * {@link LifeRules} computes each generation inside a {@code StructuredTaskScope}. Optional
+ * arguments: grid size, generations per measurement, and a band-thread mode.
  *
  * <ul>
- *   <li>{@code platform} (default) &mdash; a fixed pool of platform threads.</li>
- *   <li>{@code virtual} &mdash; virtual-thread-per-task, the executor the application ships
- *       (see {@link com.conway.engine.SimulationEngine}). This harness ranks it below
- *       {@code forkjoin}; the application does not &mdash; see below.</li>
- *   <li>{@code forkjoin} &mdash; a dedicated {@link java.util.concurrent.ForkJoinPool}
- *       with parallelism {@code min(maxPartitions, cores)}, the configuration the
- *       application shipped from 2026-09-24 to 2026-10-01. Bands are uneven, because
- *       {@code computeBand} clips rule evaluation to the active region, and the cores are
- *       asymmetric; work stealing is the standard answer to both, so it is worth
- *       measuring against the other two.</li>
+ *   <li>{@code virtual} (default) &mdash; named virtual threads, which is what the
+ *       application ships (see {@link com.conway.engine.SimulationEngine}).</li>
+ *   <li>{@code platform} &mdash; platform threads, kept as a comparator. Note what this means
+ *       under structured concurrency: a scope owns the threads it creates, so this starts a
+ *       fresh OS thread per band per generation with no pool behind it. It is not comparable
+ *       to the pooled {@code platform} figures recorded before 2026-10-06, and it is not a
+ *       proposal.</li>
  * </ul>
  *
- * <p>The modes exist so that a change of executor is decided by measurement rather than
- * by argument. Compare them on the same board and partition count.</p>
+ * <p>The mode selects the {@link ThreadFactory} the per-generation scope forks from, so a
+ * change of band threading is decided by measurement rather than by argument. Compare modes
+ * on the same board and partition count. {@code forkjoin} was removed when the band executor
+ * became a scope: a scope cannot fork into a {@code ForkJoinPool}. Its disposition is
+ * recorded in {@code docs/concurrency-features-review.md}.</p>
  *
- * <p><strong>This harness cannot choose the application's executor.</strong> It calls
+ * <p><strong>This harness does not reproduce the application's topology.</strong> It calls
  * {@code next()} from {@code main}, a platform thread; the application calls it from a
- * virtual thread, and that reverses the ranking. Here {@code forkjoin} edges ahead; in the
- * application the virtual-thread executor is 23% faster, because it shares a scheduler with
- * the thread waiting on the bands. The {@code ForkJoinPool} was adopted on this harness's
- * evidence in 2026-09 and reverted once it was measured in the application. See the
- * README's "Choosing the executor".</p>
+ * virtual thread, and that difference has reversed a ranking before &mdash; a
+ * {@code ForkJoinPool} was adopted on this harness's evidence in 2026-09 and reverted once it
+ * was measured in the application, where it cost 23%. Treat a band-threading decision taken
+ * from these numbers alone as unproven. See the README's "Choosing the executor".</p>
  *
  * <p>This is a deliberately simple harness, not a rigorous microbenchmark. It warms
  * up, resets to an identical board before every measurement and takes the best of
@@ -69,20 +67,19 @@ public final class GenerationBenchmark {
     public static void main(String[] args) throws Exception {
         int gridSize = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_GRID_SIZE;
         int generations = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_GENERATIONS;
-        String mode = args.length > 2 ? args[2] : "platform";
+        String mode = args.length > 2 ? args[2] : "virtual";
         int cores = Runtime.getRuntime().availableProcessors();
         // The same cap the application gives conway.maxPartitions by default.
         int maxPartitions = PartitionPlanner.hardwareCap(gridSize);
 
         System.out.printf(Locale.ROOT,
-                "Board %dx%d, %d generations per measurement, best of %d, %d available processors, %s executor%n%n",
+                "Board %dx%d, %d generations per measurement, best of %d, %d available processors, %s band threads%n%n",
                 gridSize, gridSize, generations, REPETITIONS, cores, mode);
 
         Generation seed = seededBoard(gridSize);
-        // ExecutorService has been AutoCloseable since Java 19: close() shuts the pool
-        // down and waits for it to terminate, replacing the manual shutdown block.
-
-        LifeRules rules = new LifeRules();
+        // No pool to close: the per-generation scope owns the threads it creates from this
+        // factory, and closes over them before next() returns.
+        LifeRules rules = new LifeRules(bandThreads(mode));
         warmUp(rules, seed, maxPartitions);
 
         Map<Integer, Double> results = new LinkedHashMap<>();
@@ -98,19 +95,22 @@ public final class GenerationBenchmark {
     }
 
     /**
-     * @param mode one of {@code platform}, {@code virtual}, {@code forkjoin}
+     * The factory each generation's task scope forks its bands from.
+     *
+     * <p>Neither mode pools: a scope creates a thread per subtask and closes over it. That is
+     * free for virtual threads and is the point of them here; for platform threads it is an OS
+     * thread per band per generation, which is why that mode is a comparator and not an option.
+     *
+     * @param mode {@code virtual} or {@code platform}
      * @throws IllegalArgumentException on an unknown mode, so a typo is not silently
      *         measured as the default
      */
-    private static ExecutorService newExecutor(String mode, int maxPartitions, int cores) {
+    private static ThreadFactory bandThreads(String mode) {
         return switch (mode) {
-            case "platform" -> Executors.newFixedThreadPool(maxPartitions);
-            case "virtual" -> Executors.newVirtualThreadPerTaskExecutor();
-            // Parallelism is the core count, not the band count: stealing redistributes
-            // work, so there is no need for a thread per band the way a fixed pool needs.
-            case "forkjoin" -> new ForkJoinPool(Math.min(maxPartitions, cores));
+            case "virtual" -> Thread.ofVirtual().name("band-", 0L).factory();
+            case "platform" -> Thread.ofPlatform().name("band-", 0L).factory();
             default -> throw new IllegalArgumentException(
-                    "Unknown executor mode '" + mode + "'; expected platform, virtual or forkjoin");
+                    "Unknown band-thread mode '" + mode + "'; expected virtual or platform");
         };
     }
 

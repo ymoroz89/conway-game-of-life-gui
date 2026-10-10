@@ -35,7 +35,7 @@ available to you if you checked.
 
 **The `Comparable?` column is load-bearing, not decoration.** It carries, per metric:
 
-- the **branch diff** between the two versions (one comment line versus a rewrite),
+- the **source diff** between the two versions' refs (one comment line versus a rewrite),
 - any **vendor boundary** crossed,
 - any **JFR schema boundary** that makes this particular metric incomparable.
 
@@ -57,13 +57,13 @@ When a delta may be called a finding:
    estimate. These are bimodal per JVM start; a mean across two modes describes neither.
 4. **Significant figures follow n.** At n=5, two are honest. Four significant figures off
    n=2 is a claim the data cannot support.
-5. **Cross-vendor, cross-schema and cross-branch deltas** carry a stated, unquantified
+5. **Cross-vendor, cross-schema and cross-source deltas** carry a stated, unquantified
    component until a control arm exists.
 6. **Direction must be consistent across reps.** A mean that flips sign between reps is
    not a result.
 7. **Never compare across environments.** One environment per study. A number from another
    environment is not corroboration, however convenient.
-8. **State what is bundled.** Enumerate *every* way the arms differ — branch diff, launch
+8. **State what is bundled.** Enumerate *every* way the arms differ — source diff between refs, launch
    flags, vendor, collector settings, driver version — before attributing a delta to any
    one of them. One project attributed a per-unit allocation difference to a single cause
    when at least four were in play.

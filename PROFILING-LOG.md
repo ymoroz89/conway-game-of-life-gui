@@ -18,8 +18,11 @@ the preflight figures come from the checks described under Preflight.
 
 ## What was measured
 
-**Code.** The band workers are virtual threads on both branches (`main` `a29e9fd`, `java25`
-`3492ab9`; identical `src/`).
+**Code.** The band workers are virtual threads in both arms' code: `a29e9fd` (then `main`,
+now tagged `java-21`) and `3492ab9` (then the `java25` branch, since merged into `main` and
+deleted). The two have identical `src/` and differ only in `maven.compiler.release`. The tag
+`java-25` (`20770f7`) has the same `src/` and `pom.xml` as `3492ab9`, so the two tags
+reproduce the two builds exactly.
 
 **JDKs.** Homebrew OpenJDK 21.0.12.1 and 25.0.4.1, selected through jenv as
 `openjdk64-21.0.11` and `openjdk64-25.0.3`. The jenv labels lag the real patch level, so the
@@ -34,10 +37,10 @@ with it (medians). Apple M2 Pro,
 
 | Arm | Artifact | JVM | Question |
 | --- | --- | --- | --- |
-| `21` | release-21 jar built from `main` by JDK 21 | 21.0.12.1 | Baseline |
+| `21` | release-21 jar built from `a29e9fd` (tag `java-21`) by JDK 21 | 21.0.12.1 | Baseline |
 | `21b` | the same file | 21.0.12.1 | A/A twin: any delta against `21` is noise by construction |
 | `25` | the same file | 25.0.4.1 | The runtime alone (`21` → `25`) |
-| `25s` | release-25 jar built from `java25` by JDK 25 | 25.0.4.1 | The upgrade as shipped (`21` → `25s`) |
+| `25s` | release-25 jar built from `3492ab9` (reproduced by tag `java-25`) by JDK 25 | 25.0.4.1 | The upgrade as shipped (`21` → `25s`) |
 
 Arms `21`, `21b` and `25` ran a sha256-identical jar (`52d3429ff6a34ffa…`); `25s` ran
 `07cf17ace8febda2…`. `25` against `25s` isolates the compile target with the JVM held fixed.
@@ -203,25 +206,48 @@ read from C1 only.
 
 ## Reproducing
 
-The rig is in `tools/bench/` on the `java25` branch: `drive/GuiDrive.java`,
-`drive/GateCheck.java`, and the templates `bench.conf.example` and `jdks.conf.example`. The
-runner, the JFR parser and the method are the project-level `jdk-performance-comparison`
-skill in `.claude/skills/jdk-performance-comparison/`. Commands below run from the
-repository root.
+*Updated 2026-10-10, after the `java25` branch was merged into `main`: the arms are rebuilt
+from the release tags `java-21` and `java-25`, which pin them to the exact code measured.*
 
-1. Build `main` with JDK 21 and `java25` with JDK 25 (`mvn -DskipTests package`), and stage
-   each arm's jar as `/tmp/jdkcmp-<arm>/bench-jar.jar` — the release-21 jar for `21`, `21b`
-   and `25`, the release-25 jar for `25s`. Check the first three are sha256-identical.
-2. Compile the drivers once at the lowest release, so one build runs on both JVMs:
-   `javac --release 21 -cp <release-21 jar> -d tools/bench/out tools/bench/drive/*.java`.
-3. Copy `bench.conf.example` to `bench.conf` unchanged; write `jdks.conf` with the four arms
-   in the table above.
-4. Run, and leave the machine alone — foreground placement on macOS moves this workload far
+The rig is in `tools/bench/` on `main`: `drive/GuiDrive.java`, `drive/GateCheck.java`, and
+the templates `bench.conf.example` and `jdks.conf.example`. The runner, the JFR parser and
+the method are the project-level `jdk-performance-comparison` skill in
+`.claude/skills/jdk-performance-comparison/`. The `java-21` tag predates the rig, so the JDK 21
+jar comes from the tag and everything else from the `main` checkout. Commands run from the
+repository root on `main`.
+
+1. Build each release from its tag, with its own JDK:
+
+   ```bash
+   git worktree add --detach /tmp/b21 java-21
+   git worktree add --detach /tmp/b25 java-25
+   JAVA_HOME="$(jenv prefix openjdk64-21.0.11)" mvn -q -DskipTests package -f /tmp/b21/pom.xml
+   JAVA_HOME="$(jenv prefix openjdk64-25.0.3)"  mvn -q -DskipTests package -f /tmp/b25/pom.xml
+   ```
+
+2. Stage each arm's jar as `/tmp/jdkcmp-<arm>/bench-jar.jar`: one copy of the release-21 jar
+   for `21`, `21b` and `25`, the release-25 jar for `25s`. Builds are not byte-reproducible
+   (`pom.xml` sets no `outputTimestamp`), so a rebuilt jar will not match the hashes above —
+   what matters is that the first three arms share one file:
+
+   ```bash
+   for a in 21 21b 25; do mkdir -p /tmp/jdkcmp-$a; cp /tmp/b21/target/GuiLife.jar /tmp/jdkcmp-$a/bench-jar.jar; done
+   mkdir -p /tmp/jdkcmp-25s; cp /tmp/b25/target/GuiLife.jar /tmp/jdkcmp-25s/bench-jar.jar
+   shasum -a 256 /tmp/jdkcmp-*/bench-jar.jar
+   ```
+
+3. Compile the drivers once at the lowest release, so one build runs on both JVMs:
+   `javac --release 21 -cp /tmp/b21/target/GuiLife.jar -d tools/bench/out tools/bench/drive/*.java`.
+4. Copy `bench.conf.example` to `bench.conf` unchanged, and `jdks.conf.example` to
+   `jdks.conf`; the template carries arms `21`, `25` and `25s` on the tags, so add
+   `21b  openjdk64-21.0.11  java-21` for the A/A twin. The runner resolves each tag to its
+   commit before running and records both in every result row.
+5. Run, and leave the machine alone — foreground placement on macOS moves this workload far
    more than the JDK does:
 
 ```bash
 .claude/skills/jdk-performance-comparison/scripts/run-matrix.sh \
     --rounds C1,C3 --reps 5 --units 2000000 \
     --jdks tools/bench/jdks.conf --bench tools/bench/bench.conf \
-    --out profiling/run-2M-20261001-jdk
+    --out profiling/run-2M-<date>-jdk
 ```

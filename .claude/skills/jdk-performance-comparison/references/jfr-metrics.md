@@ -10,7 +10,7 @@ Contents:
 ## Identity gates
 
 A run failing any of these is **discarded, not analysed**. They exist because every
-upstream label can be wrong — the jenv alias, the branch name, the filename, the IDE's run
+upstream label can be wrong — the jenv alias, the branch or tag name, the filename, the IDE's run
 configuration. Only the recording is evidence.
 
 | Gate | Check |
@@ -99,7 +99,7 @@ never to attribute a percentage of runtime.
   provisional unless they replicate.
 - **Bytes per unit is usually JDK-independent.** It is a property of the application's
   allocation behaviour. A change here between JDK arms is more likely a workload or code
-  difference than a runtime one — check the branch diff before believing it.
+  difference than a runtime one — check the source diff between refs before believing it.
 - **A non-zero pinning count is a finding**, not noise — but see version-compat before
   comparing counts across releases.
 

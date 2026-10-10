@@ -2,7 +2,7 @@
 name: jdk-performance-comparison
 description: >
   Benchmark and profile an application across multiple JDK versions (21 vs 25 vs 27, and
-  so on) using jenv, per-version branches and JFR, producing a comparison table of
+  so on) using jenv, a git ref per version (a release tag, or a branch) and JFR, producing a comparison table of
   throughput, heap, GC and allocation plus an honest assessment of what is actually
   attributable to the JDK. Use this whenever the user names two or more Java or JDK
   versions to compare, asks which JDK is faster, asks whether a Java upgrade or migration
@@ -49,7 +49,7 @@ Report what you find; never guess any of it. Run `scripts/discover_jdks.sh`, or 
 
 ```bash
 jenv versions --bare | while read -r v; do printf '%-24s ' "$v"; "$(jenv prefix "$v")/bin/java" -version 2>&1 | head -1; done
-git branch -a && git status --porcelain
+git tag -l && git branch -a && git status --porcelain
 ```
 
 **jenv names are labels, and labels lie.** Expect to find aliases that are stale by a
@@ -68,10 +68,10 @@ Then work out the project configuration and present it with the mapping table:
 
 | Field | How to find it |
 |---|---|
-| Branch per version | `git branch -a`; the release setting in the build file |
+| Ref per version | `git tag -l`, then `git branch -a`; the release setting in the build file at each ref. Prefer release tags — see **Pin each arm to a tag** |
 | Build command, artifact, launch command | README, build file, CI config |
-| Automated driver | something that starts the app, runs a fixed workload, stops, prints a result line |
-| Per-branch extra flags | compiler config (e.g. a branch needing `--enable-preview`) |
+| Automated driver | something that starts the app, runs a fixed workload, stops, prints a result line. It may live only at the newest ref: an older release tag can predate the rig, so build the *application* from the arm's ref and take the rig from the current checkout |
+| Per-ref extra flags | compiler config (e.g. a ref needing `--enable-preview`) |
 | Workload unit and size | what the app counts; see **the workload floor** |
 | Throughput ground truth | a line the app itself logs — never JFR inference |
 | Environment | how the app *ships* — GUI foreground, server, CLI. This is what you measure |
@@ -90,7 +90,7 @@ follow, both learned the hard way:
   moment the table is quoted, and the user's attention was spent on a number that was
   never going to count.
 
-**Wait for confirmation before running anything.** Getting the branch map or the JDK
+**Wait for confirmation before running anything.** Getting the ref map or the JDK
 mapping wrong wastes hours of machine time, and both are cheap to check with a human.
 
 If the project has no automated driver, write one and commit it under `tools/bench/` or
@@ -105,13 +105,13 @@ least several hundred GC cycles, and per-unit metrics reproduce between runs. Es
 this per project and record it. Raise it freely; never lower it. A short run does not give
 a noisier answer — it invalidates the GC rows outright.
 
-### What branch-per-version actually measures
+### What ref-per-version actually measures
 
-Each arm is a JDK **and** that JDK's branch, so a delta bundles the runtime with whatever
-the migration changed in source. Quantify rather than assume:
+Each arm is a JDK **and** the code at that JDK's ref, so a delta bundles the runtime with
+whatever the migration changed in source. Quantify rather than assume:
 
 ```bash
-git diff --stat <branch-a> <branch-b> -- <source-dir>
+git diff --stat <ref-a> <ref-b> -- <source-dir>
 ```
 
 Report it per adjacent pair. A one-line difference means effectively a pure JDK
@@ -119,17 +119,27 @@ comparison; a few hundred lines including a rewrite means that column bundles a 
 with a JDK change, and **no delta across it belongs to the JDK alone**. Mark which columns
 are clean in the table itself.
 
-If the user wants a *pure* JDK comparison instead, build one artifact from one branch and
-run that same artifact on every JVM. Ask which they want when the branch diff is large.
+If the user wants a *pure* JDK comparison instead, build one artifact from one ref and
+run that same artifact on every JVM. Ask which they want when the source diff is large.
+
+### Pin each arm to a tag
+
+A ref can be a branch, a tag or a commit — the runner checks each one out with
+`git worktree add --detach`, so all three work. **Prefer a tag per release.** A branch moves:
+between a study and its reproduction it can gain commits, change what it means, or be
+merged away and deleted, and then the report names code that no longer exists — or worse,
+different code under the same name. A tag does not move, so "built from `java-21`" still
+means one exact commit years later. If the project releases from branches, record the
+commit hash of every arm alongside the branch name, in the results and in the report.
 
 ## Step 2 — preflight
 
 Report each check; stop on failure.
 
-1. **Working tree clean** (`git status --porcelain` empty). Switching branches with
+1. **Working tree clean** (`git status --porcelain` empty). Switching refs with
    uncommitted changes either fails or carries them into the next arm. If dirty, ask —
    do not stash on your own initiative.
-2. **Record restore state**: current branch, `jenv global`, and any `.java-version`
+2. **Record restore state**: current branch (or detached commit), `jenv global`, and any `.java-version`
    contents. Restore all three when the study ends, including after a failure.
 3. **Neutralise `.java-version`.** jenv precedence is `JENV_VERSION` > local
    `.java-version` > global, so a `.java-version` in the project root **silently overrides
@@ -151,7 +161,7 @@ Report each check; stop on failure.
 
 Before the study, and reported to the user:
 
-1. **Noise floor.** Run the workload 5 times on one JDK, one branch, nothing changed.
+1. **Noise floor.** Run the workload 5 times on one JDK, one ref, nothing changed.
    Report min, max, median, spread. Any later delta smaller than this is not a result.
 2. **Environment sensitivity**, if the app has a foreground/background distinction. Pick
    one environment and hold it for the entire study.
@@ -238,7 +248,7 @@ different default is exactly as damaging as a rejected option and far quieter.
 - **Add no tuning the app does not ship with.** A README suggesting
   `-XX:MaxGCPauseMillis=20` for comfortable interactive use is suggesting exactly the flag
   that would replace the JDK's ergonomics with yours and destroy C1 and C3.
-- **Per-branch flags are a confound.** If one branch needs `--enable-preview` and another
+- **Per-ref flags are a confound.** If one ref needs `--enable-preview` and another
   cannot accept it, that flag differs across arms; it changes verification and can disable
   the default CDS archive. Record it; do not call the arms identical.
 - `settings=profile` is required — default settings record **zero** GC events, leaving no
@@ -279,7 +289,7 @@ would have been wrong.
 
 Use the bundled runner. It owns everything that is the same in every project and easy to
 get wrong — jenv resolution, GraalVM rejection, `.java-version` neutralising and restore,
-per-branch worktree builds, `java -version` verification per arm, interleaving, round
+per-ref worktree builds, `java -version` verification per arm, interleaving, round
 options, flag verification, and one JSON row per run:
 
 ```bash
@@ -290,19 +300,20 @@ It reads two project files, which are the only things you write per project:
 
 | File | Contents |
 |---|---|
-| `jdks.conf` | one line per arm: `label  jenv-name  branch` |
+| `jdks.conf` | one line per arm: `label  jenv-name  ref` — the ref is a tag, branch or commit |
 | `bench.conf` | `ENV`, `BUILD_CMD`, `RUN_CMD`, the output regexes, and any `ROUND_<name>` overrides |
 
 `RUN_CMD` takes `{JAVA}`, `{OPTS}`, `{UNITS}` and `{WORKTREE}` placeholders — use
-`{WORKTREE}` to run the artifact the arm's own branch built; `BUILD_CMD` takes
+`{WORKTREE}` to run the artifact built from the arm's own ref; `BUILD_CMD` takes
 `{WORKTREE}`. Rounds may be overridden or invented with `ROUND_<name>`, using `{JFR}`
 where the recorder options belong.
 
 What it does per arm, and why each step is there rather than left to the operator:
 
 ```bash
-git worktree add /tmp/jdkcmp-<label> <branch>   # not `git checkout`: a dirty tree
-                                                 # cannot leak into an arm
+git worktree add --detach /tmp/jdkcmp-<label> <ref>   # not `git checkout`: a dirty tree
+                                                      # cannot leak into an arm, and
+                                                      # --detach lets two arms share a ref
 jenv global <jenv-name>
 java -version                                    # MUST report the intended version,
                                                  # evaluated in the project directory
@@ -325,7 +336,7 @@ rep 1: [switch→21, run] [switch→25, run] [switch→27, run]
 rep 2: [switch→21, run] [switch→25, run] [switch→27, run]
 ```
 
-Build once per branch up front and reuse, so per-rep cost is just the switch and the run.
+Build once per ref up front and reuse, so per-rep cost is just the switch and the run.
 
 - **5 iterations per version per round.** Not 1, not 3. GC young-gen sizing has been
   observed to be *bimodal per JVM start* — the same artifact landing on two heap modes a
@@ -397,7 +408,7 @@ Read `references/reporting.md` for the table format, the acceptance criteria tha
 when a delta may be called a finding, and the structure of the written assessment.
 
 The short version: one table per round, all versions side by side, generated from the
-parsed data and never hand-transcribed; a `Comparable?` column carrying the branch diff,
+parsed data and never hand-transcribed; a `Comparable?` column carrying the source diff between refs,
 vendor boundary and schema boundary for each metric; then prose covering what is
 established, what is merely suggested and what run would settle it, what is not
 attributable and why, and the single highest-value next experiment with its cost.

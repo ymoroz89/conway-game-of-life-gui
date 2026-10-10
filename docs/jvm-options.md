@@ -1,8 +1,9 @@
 # Production JVM options
 
-A checklist of JVM flags for running this application, organized by situation. On this
-branch JDK 25 is the minimum: the jar targets release 25, and JDK 21 refuses to load it.
-Every flag line in this document was started on both JDK 21 (`main`'s minimum) and JDK 25;
+A checklist of JVM flags for running this application, organized by situation. On `main`
+JDK 25 is the minimum: the jar targets release 25, and JDK 21 refuses to load it.
+Every flag line in this document was started on both JDK 21 (the minimum for the `java-21`
+release) and JDK 25;
 the JDK 21 column is kept because it shows what breaks when a deployment moves from 21 to
 25. Every performance claim was measured on this codebase — on JDK 21 unless it says
 otherwise. The conditions are recorded under [Evidence](#evidence), so any number here can
@@ -106,7 +107,7 @@ throughput (16,292–16,648 generations/s versus G1's 16,384), measured on JDK 2
 its ZGC modes. There were **no allocation stalls** in either mode. This removes the
 collector from the frame-time budget entirely.
 
-Why no `-XX:+ZGenerational`, which `main` pairs with ZGC? On JDK 21 that flag defaults to
+Why no `-XX:+ZGenerational`, which the `java-21` release pairs with ZGC? On JDK 21 that flag defaults to
 `false`, so `-XX:+UseZGC` on its own selects the legacy, non-generational mode. JDK 24
 removed that mode (JEP 490), so on JDK 25 `-XX:+UseZGC` alone is generational and the old
 flag only prints `Ignoring option ZGenerational; support was removed in 24.0`. Nothing is

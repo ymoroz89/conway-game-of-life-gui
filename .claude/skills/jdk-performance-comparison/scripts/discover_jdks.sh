@@ -55,14 +55,22 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "branch : $(git rev-parse --abbrev-ref HEAD)"
     dirty="$(git status --porcelain)"
     if [ -n "$dirty" ]; then
-        echo "status : DIRTY -- branch switching will fail or carry changes between arms."
+        echo "status : DIRTY -- switching refs will fail or carry changes between arms."
         echo "$dirty" | sed 's/^/         /'
     else
         echo "status : clean"
     fi
     echo
+    # Tags first: a release tag pins an arm to one commit for good, where a branch can move
+    # or be deleted between the study and its reproduction.
+    echo "tags (preferred refs for arms):"
+    # %(*objectname) is the commit an annotated tag points at; a lightweight tag has none,
+    # and its own objectname already is the commit.
+    tags="$(git tag -l --format='         %(refname:short)  commit %(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)  %(contents:subject)')"
+    if [ -n "$tags" ]; then echo "$tags" | cut -c1-110; else echo "         (none)"; fi
+    echo
     echo "branches:"
     git branch -a --format='         %(refname:short)'
 else
-    echo "(not a git repository -- branch-per-version mapping will not apply)"
+    echo "(not a git repository -- the ref-per-version mapping will not apply)"
 fi

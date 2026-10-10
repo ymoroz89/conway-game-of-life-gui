@@ -2,13 +2,15 @@
 # Run the cross-JDK condition matrix. Project-agnostic: everything specific to an
 # application lives in two config files, so this orchestration is written once.
 #
-#   jdks.conf   label  jenv-name  branch      (which JVMs, and which branch each uses)
+#   jdks.conf   label  jenv-name  ref         (which JVMs, and which git ref each uses:
+#                                             a release tag, a branch or a commit)
 #   bench.conf  how to build and launch THIS app, and how to read its output
 #
 # What this file owns, because it is the same everywhere and easy to get wrong:
 #   - resolving jenv names and refusing non-OpenJDK builds
 #   - neutralising .java-version, which silently overrides `jenv global`
-#   - building each branch in its own worktree so a dirty tree cannot leak into an arm
+#   - resolving every arm's ref to a commit up front, and refusing one that does not exist
+#   - building each ref in its own worktree so a dirty tree cannot leak into an arm
 #   - verifying `java -version` per arm, in the project directory, before measuring
 #   - interleaving by repetition so drift hits every arm equally
 #   - per-round JVM options, and appending one JSON row per run
@@ -71,7 +73,7 @@ trap restore EXIT
 trap 'pkill -TERM -P $$ 2>/dev/null; exit 130' INT TERM
 
 # --- resolve arms ----------------------------------------------------------------
-LABELS=(); NAMES=(); BRANCHES=(); WORKTREES=()
+LABELS=(); NAMES=(); BRANCHES=(); COMMITS=(); WORKTREES=()
 while read -r label name branch; do
     case "$label" in \#*|"") continue ;; esac
     prefix="$(jenv prefix "$name" 2>/dev/null)"
@@ -81,7 +83,11 @@ while read -r label name branch; do
     if ! "$prefix/bin/java" -version 2>&1 | head -1 | grep -q '^openjdk'; then
         echo "label $label ($name) is not an OpenJDK build -- refusing" >&2; exit 1
     fi
-    LABELS+=("$label"); NAMES+=("$name"); BRANCHES+=("$branch")
+    # A ref that does not resolve -- a deleted branch, a mistyped tag -- would otherwise
+    # surface only as a failed worktree add, or not at all when the arm is pre-staged.
+    commit="$(git rev-parse --verify --quiet "${branch}^{commit}")" \
+        || { echo "label $label: ref '$branch' does not resolve to a commit" >&2; exit 1; }
+    LABELS+=("$label"); NAMES+=("$name"); BRANCHES+=("$branch"); COMMITS+=("${commit:0:7}")
     WORKTREES+=("/tmp/jdkcmp-$label")
 done < "$JDKS_CONF"
 
@@ -89,24 +95,25 @@ done < "$JDKS_CONF"
 
 echo "=== arms (env=$ENV, units=$UNITS, reps=$REPS, rounds=$ROUNDS) ==="
 for i in "${!LABELS[@]}"; do
-    printf '  %-4s %-20s branch=%-10s %s\n' "${LABELS[$i]}" "${NAMES[$i]}" "${BRANCHES[$i]}" \
+    printf '  %-4s %-20s ref=%-10s commit=%s  %s\n' "${LABELS[$i]}" "${NAMES[$i]}" "${BRANCHES[$i]}" "${COMMITS[$i]}" \
         "$("$(jenv prefix "${NAMES[$i]}")/bin/java" -version 2>&1 | head -1)"
 done
 
 # Source divergence between arms is a confound; report it rather than assume it away.
-echo "=== branch diff between adjacent arms ==="
+echo "=== source diff (src/) between adjacent arms' refs ==="
 for ((i=1; i<${#LABELS[@]}; i++)); do
     printf '  %s -> %s : %s\n' "${LABELS[$((i-1))]}" "${LABELS[$i]}" \
         "$(git diff --shortstat "${BRANCHES[$((i-1))]}" "${BRANCHES[$i]}" -- src/ 2>/dev/null | sed 's/^ *//' || echo '?')"
 done
 
-# --- build each branch with its own JDK ------------------------------------------
+# --- build each ref with its own JDK ---------------------------------------------
 for i in "${!LABELS[@]}"; do
     wt="${WORKTREES[$i]}"
     if [ ! -d "$wt" ]; then
         git worktree prune
         # --detach: a branch that is checked out elsewhere (typically the current one)
-        # cannot be checked out again, but its commit can.
+        # cannot be checked out again, but its commit can -- and it lets two arms share
+        # one ref, and a tag or commit check out at all.
         git worktree add -q --detach "$wt" "${BRANCHES[$i]}" || exit 1
     fi
     echo "building ${LABELS[$i]} from ${BRANCHES[$i]} ..."
@@ -198,7 +205,7 @@ for round in "${ROUND_LIST[@]}"; do
             cmd="${RUN_CMD//\{JAVA\}/$java_home/bin/java}"
             cmd="${cmd//\{OPTS\}/$opts}"
             cmd="${cmd//\{UNITS\}/$UNITS}"
-            # Lets an arm run the artifact its own branch built, rather than one shared jar.
+            # Lets an arm run the artifact built from its own ref, rather than one shared jar.
             cmd="${cmd//\{WORKTREE\}/${WORKTREES[$i]}}"
 
             echo "[$(date +%H:%M:%S)] $tag :: $actual"
@@ -208,7 +215,7 @@ for round in "${ROUND_LIST[@]}"; do
             sha=""; [ -f "$jfr" ] && sha="$(shasum -a 256 "$jfr" | cut -d' ' -f1)"
 
             ENV="$ENV" ROUND="$round" LABEL="$label" REP="$rep" JENV_NAME="$name" \
-            JAVA_VER="$actual" BRANCH="${BRANCHES[$i]}" UNITS_TARGET="$UNITS" \
+            JAVA_VER="$actual" BRANCH="${BRANCHES[$i]}" COMMIT="${COMMITS[$i]}" UNITS_TARGET="$UNITS" \
             EXITC="$exit_code" JFR="$jfr" SHA="$sha" CONSOLE="$console" OPTS="$opts" \
             UNITS_RE="${UNITS_RE:-}" SECONDS_RE="${SECONDS_RE:-}" RATE_RE="${RATE_RE:-}" \
             MARKER_START_RE="${MARKER_START_RE:-}" MARKER_END_RE="${MARKER_END_RE:-}" \
@@ -235,7 +242,8 @@ row = {
     "env": os.environ["ENV"], "round": os.environ["ROUND"],
     "jdk": os.environ["LABEL"], "rep": int(os.environ["REP"]),
     "jenv_name": os.environ["JENV_NAME"], "java_version": os.environ["JAVA_VER"],
-    "branch": os.environ["BRANCH"], "jvm_opts": os.environ["OPTS"].strip(),
+    "ref": os.environ["BRANCH"], "commit": os.environ["COMMIT"],
+    "jvm_opts": os.environ["OPTS"].strip(),
     "units_target": int(os.environ["UNITS_TARGET"]),
     "units": grab("UNITS_RE", int),
     "seconds": grab("SECONDS_RE", float),

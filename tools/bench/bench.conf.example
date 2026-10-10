@@ -25,9 +25,12 @@ ENV=gui
 # arms must execute a byte-identical file, and letting each build its own reintroduces a
 # javac difference at the same --release. Verify with shasum before measuring.
 #
-# Set this to a real build only when each arm is SUPPOSED to run its own branch's
-# artifact (the as-shipped question), e.g.:
+# Set this to a real build only when each arm is SUPPOSED to run the artifact of its own
+# ref (the as-shipped question alone, with no shared-jar arm). The runner then checks each
+# arm's ref -- e.g. the tags java-21 and java-25 -- out into {WORKTREE} and builds it with
+# that arm's JDK:
 #   BUILD_CMD='mvn -q -DskipTests clean package -f {WORKTREE}/pom.xml'
+# and RUN_CMD must point at {WORKTREE}/target/GuiLife.jar instead of bench-jar.jar.
 BUILD_CMD='true'
 
 # {JAVA} resolved JDK, {OPTS} the round's JVM options, {UNITS} the workload size,

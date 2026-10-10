@@ -67,9 +67,9 @@ partitions.](docs/images/screenshot.png)
 
 ## Quick start
 
-**Requirements:** JDK 25 or newer, and Maven. This is the `java25` branch: the build
-targets release 25, so Maven must run on a JDK 25 or newer (`JAVA_HOME`), and an older
-`java` refuses the jar with `UnsupportedClassVersionError`. The JDK 21 build is on `main`.
+**Requirements:** JDK 25 or newer, and Maven. The build targets release 25, so Maven must
+run on a JDK 25 or newer (`JAVA_HOME`), and an older `java` refuses the jar with
+`UnsupportedClassVersionError`. The JDK 21 release is the tag `java-21`.
 The application needs a display; the tests do not.
 
 ```bash
@@ -384,7 +384,7 @@ do the next piece of work.
 
 Every step is in the JDK source (`lib/src.zip`). The measurements in this section were
 taken on JDK 21, so the first column cites OpenJDK 21.0.12.1; the second cites 25.0.4.1,
-which this branch requires. JDK 25 reaches the same outcome at every step, by different code
+which `main` requires. JDK 25 reaches the same outcome at every step, by different code
 in the three marked †:
 
 | Step | JDK 21.0.12.1 | JDK 25.0.4.1 |
@@ -848,6 +848,11 @@ application, with two pieces kept in this repository:
 | Rig | `tools/bench/` | `drive/GuiDrive.java` drives the real window, event dispatch thread and repaint for a fixed number of generations. `drive/GateCheck.java` steps a seeded board an exact number of generations and hashes it, so two JVMs are shown to compute the same board before any timing is compared. `bench.conf.example` and `jdks.conf.example` are the templates for the live configs, which stay gitignored |
 | Method | `.claude/skills/jdk-performance-comparison/` | A project-level Claude Code skill: the procedure (interleaved arms, a measured noise floor, separate rounds with and without JFR, the JVM read back from every recording), the runner `scripts/run-matrix.sh` and the JFR parser `scripts/parse_jfr.py` |
 
+Each JDK release is tagged — `java-21` and `java-25` — and a comparison builds its arms from
+the tags rather than from branches, so a result stays tied to the exact code it measured even
+after the branches move on. The `java-21` tag predates the rig, so its jar is built from the
+tag while the rig and the runner come from `main`.
+
 Claude Code picks the skill up automatically in this repository: ask it to compare JDK
 versions, or invoke `/jdk-performance-comparison`. The scripts also run on their own from the
 repository root; the exact steps for the last comparison are in
@@ -953,13 +958,20 @@ The engineering behind the design decisions above is written up in `docs/`:
 | [Production JVM options](docs/jvm-options.md) | Which flags for which case, flags that break startup on 21 or 25, and the GC and JFR measurements behind them |
 | [Profiling log: Java 21 vs 25](PROFILING-LOG.md) | The latest JDK 21 vs 25 comparison (2026-10-01): method, every number behind the result, what is not established, and how to reproduce it |
 
-This branch, `java25`, carries the application forward to JDK 25. The same application
-also lives on sibling branches, which serve as a testbed for other JDK releases and for
-ports to other languages:
+`main` carries the application on JDK 25. Each JDK release of it is tagged, so any two can be
+checked out, built and compared:
+
+| Tag | Commit | What it is |
+| --- | --- | --- |
+| `java-21` | `a29e9fd` | The JDK 21 release: `maven.compiler.release` 21. It predates the bench rig and the comparison skill, which live on `main` |
+| `java-25` | `20770f7` | The JDK 25 release. `src/` is identical to `java-21`, and `pom.xml` differs only in `maven.compiler.release` |
+
+The same application also lives on sibling branches, which serve as a testbed for other JDK
+releases and for ports to other languages:
 
 | Branch | What it holds |
 | --- | --- |
-| `main` | The JDK 21 baseline this branch is built on, with its release tagged `v1.0.0` (`a29e9fd`, 2026-10-01). `src/` is identical and `pom.xml` differs only in `maven.compiler.release`; the bench rig in `tools/bench/` and the `jdk-performance-comparison` skill are only on this branch |
+| `main` | The current line on JDK 25 — the `java-25` release plus anything since — with the bench rig in `tools/bench/` and the `jdk-performance-comparison` skill |
 | `java27` | The application carried forward to JDK 27, with `StructuredTaskScope` adopted as a preview API and the build pinned to exactly JDK 27 |
 | `kotlin` | A Kotlin port, built with Gradle |
 | `rust` | A Rust port, built with Cargo |

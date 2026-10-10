@@ -74,6 +74,6 @@ across the boundary. A table cell that cannot honestly hold a delta should say w
 short phrase rather than showing a number that invites the comparison anyway.
 
 This is the same rule that applies to vendor boundaries (Homebrew OpenJDK versus Azul Zulu)
-and to branch boundaries where the source changed. All three are cases of "the arms differ
+and to ref boundaries where the source changed. All three are cases of "the arms differ
 by more than the thing you are attributing the delta to", and all three belong in the
 `Comparable?` column of the results table.

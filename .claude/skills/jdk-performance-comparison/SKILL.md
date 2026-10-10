@@ -151,7 +151,10 @@ Report each check; stop on failure.
    final state. All must match, or the arms are not doing the same work and nothing
    downstream compares. This is a gate, not a round: it produces no table and no timing.
    It exists because matching *counts* never proved matching *results*, and an arm quietly
-   doing less work looks exactly like an arm being fast.
+   doing less work looks exactly like an arm being fast. The gate runs by hand, outside the
+   runner, so call each JDK by its full path — `"$(jenv prefix <name>)/bin/java"` — never a
+   bare `java`: that goes through jenv's shim, which a `.java-version` file can point at a
+   different release, and every gate line then silently runs on the same JVM.
 6. **Output directory empty, or explicitly approved.** List any existing recordings,
    result rows, derived JSON and app logs, show the user, and **ask before deleting
    anything** — see Step 8. Stale artifacts from an earlier run match the same globs as

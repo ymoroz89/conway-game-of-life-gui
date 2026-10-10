@@ -238,11 +238,24 @@ repository root on `main`.
 
 3. Compile the drivers once at the lowest release, so one build runs on both JVMs:
    `javac --release 21 -cp /tmp/b21/target/GuiLife.jar -d tools/bench/out tools/bench/drive/*.java`.
-4. Copy `bench.conf.example` to `bench.conf` unchanged, and `jdks.conf.example` to
+4. Check that every JVM computes the same board before timing anything. All three lines must
+   print the same final state — population 346, alive hash −183858688, ever-alive hash
+   −1980827136:
+
+   ```bash
+   J21="$(jenv prefix openjdk64-21.0.11)"; J25="$(jenv prefix openjdk64-25.0.3)"
+   "$J21/bin/java" -cp tools/bench/out:/tmp/jdkcmp-21/bench-jar.jar  drive.GateCheck 50000
+   "$J25/bin/java" -cp tools/bench/out:/tmp/jdkcmp-25/bench-jar.jar  drive.GateCheck 50000
+   "$J25/bin/java" -cp tools/bench/out:/tmp/jdkcmp-25s/bench-jar.jar drive.GateCheck 50000
+   ```
+
+   Call each JDK by its full path. A bare `java` goes through jenv's shim, which a
+   `.java-version` file can point at a different release altogether.
+5. Copy `bench.conf.example` to `bench.conf` unchanged, and `jdks.conf.example` to
    `jdks.conf`; the template carries arms `21`, `25` and `25s` on the tags, so add
    `21b  openjdk64-21.0.11  java-21` for the A/A twin. The runner resolves each tag to its
    commit before running and records both in every result row.
-5. Run, and leave the machine alone — foreground placement on macOS moves this workload far
+6. Run, and leave the machine alone — foreground placement on macOS moves this workload far
    more than the JDK does:
 
 ```bash

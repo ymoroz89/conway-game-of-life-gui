@@ -966,12 +966,8 @@ checked out, built and compared:
 | `java-21` | `a29e9fd` | The JDK 21 release: `maven.compiler.release` 21. It predates the bench rig and the comparison skill, which live on `main` |
 | `java-25` | `20770f7` | The JDK 25 release. `src/` is identical to `java-21`, and `pom.xml` differs only in `maven.compiler.release` |
 
-The same application also lives on sibling branches, which serve as a testbed for other JDK
-releases and for ports to other languages:
+## Maintainer
+- [@ymoroz89](https://github.com/ymoroz89)
 
-| Branch | What it holds |
-| --- | --- |
-| `main` | The current line on JDK 25 — the `java-25` release plus anything since — with the bench rig in `tools/bench/` and the `jdk-performance-comparison` skill |
-| `java27` | The application carried forward to JDK 27, with `StructuredTaskScope` adopted as a preview API and the build pinned to exactly JDK 27 |
-| `kotlin` | A Kotlin port, built with Gradle |
-| `rust` | A Rust port, built with Cargo |
+## License
+No `LICENSE` file is currently present in this repository.

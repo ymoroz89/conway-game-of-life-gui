@@ -845,8 +845,8 @@ application, with two pieces kept in this repository:
 
 | Piece | Where | What it is |
 | --- | --- | --- |
-| Rig | `tools/bench/` | `drive/GuiDrive.java` drives the real window, event dispatch thread and repaint for a fixed number of generations. `drive/GateCheck.java` steps a seeded board an exact number of generations and hashes it, so two JVMs are shown to compute the same board before any timing is compared. `bench.conf.example` and `jdks.conf.example` are the templates for the live configs, which stay gitignored |
-| Method | `.claude/skills/jdk-performance-comparison/` | A project-level Claude Code skill: the procedure (interleaved arms, a measured noise floor, separate rounds with and without JFR, the JVM read back from every recording), the runner `scripts/run-matrix.sh` and the JFR parser `scripts/parse_jfr.py` |
+| Rig | `tools/bench/` | `drive/GuiDrive.java` drives the real window, event dispatch thread and repaint for a fixed number of generations. `drive/GateCheck.java` steps a seeded board an exact number of generations and hashes it, so two JVMs are shown to compute the same board before any timing is compared. `sample-rss.sh` samples each run's resident memory from outside the JVM. `bench.conf.example` and `jdks.conf.example` are the templates for the live configs, which stay gitignored |
+| Method | `.claude/skills/jdk-performance-comparison/` | A project-level Claude Code skill: the procedure (interleaved arms, a measured noise floor, separate rounds with and without JFR, memory confirmed without the profiler, the JVM read back from every recording), the runner `scripts/run-matrix.sh` and the JFR parser `scripts/parse_jfr.py` |
 
 Each JDK release is tagged — `java-21` and `java-25` — and a comparison builds its arms from
 the tags rather than from branches, so a result stays tied to the exact code it measured even
@@ -855,8 +855,9 @@ tag while the rig and the runner come from `main`.
 
 Claude Code picks the skill up automatically in this repository: ask it to compare JDK
 versions, or invoke `/jdk-performance-comparison`. The scripts also run on their own from the
-repository root; the exact steps for the last comparison are in
-[the profiling log](PROFILING-LOG.md#reproducing). Raw output goes to `profiling/`, which is
+repository root; the staging steps are in [the profiling log](PROFILING-LOG.md#reproducing),
+and the rounds of the latest comparison under
+[reproducing the rerun](PROFILING-LOG.md#reproducing-the-rerun). Raw output goes to `profiling/`, which is
 gitignored, so a comparison's numbers are kept by writing them into the log.
 
 Two traps catch runs started by hand rather than through the runner:
@@ -873,9 +874,20 @@ Two traps catch runs started by hand rather than through the runner:
   happen several times per generation, and the profiler distorts exactly the path being
   measured.
 
-The latest comparison, on 2026-10-01: JDK 25 commits half the heap of JDK 21 (296 against
+~~The latest comparison, on 2026-10-01: JDK 25 commits half the heap of JDK 21 (296 against
 620 MiB) with no measurable throughput difference: two identical JDK 21 arms differed by
-3.90%, about as much as JDK 21 and JDK 25 did (+4.5% to +5.1%), and every range overlapped.
+3.90%, about as much as JDK 21 and JDK 25 did (+4.5% to +5.1%), and every range overlapped.~~
+
+**2026-10-26:** the latest comparison is a full rerun
+([profiling log](PROFILING-LOG.md#2026-10-26--full-rerun)):
+
+- **Throughput:** JDK 25 is ~3% faster. The identical JDK 21 twins differed by 0.10% this
+  time, and every JDK 25 run beat every JDK 21 run. At an equal heap, with exactly 439
+  collections in every run on both JDKs, it was still 2–3% ahead, so the gain is in the
+  runtime, not GC sizing.
+- **Memory:** the halved heap appears only while JFR is recording. JFR's own classes push
+  JDK 25's metaspace over its 21 MiB threshold, and the GC cycle that follows shrinks the
+  heap. Without JFR, JDK 25 commits 620 MiB against 516, and its process is ~18% larger.
 
 ## JVM tuning
 

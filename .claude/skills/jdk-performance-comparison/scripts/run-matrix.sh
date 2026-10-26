@@ -124,10 +124,13 @@ done
 
 # Round options. bench.conf may define ROUND_<name> for any round, including names of
 # its own -- the built-ins below are only a default. Use {JFR} where the flight-recorder
-# options should go. Examples:
+# options should go, and {RUN} for this run's own path prefix (<out>/<env>-<round>-<label>-rep<n>),
+# so per-run files such as unified-logging output sit next to the run's console log.
+# Examples:
 #
 #   ROUND_C2='-Xms1g -Xmx1g -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=40'
 #   ROUND_tuned='-Xms2g -Xmx2g -XX:MaxGCPauseMillis=50 {JFR}'
+#   ROUND_gclog='-Xlog:gc*=info:file={RUN}.gc.log:uptime,level,tags'
 #
 # A project's own tuned configuration is often the interesting round: it answers "how do
 # these JDKs compare under the settings we actually ship with", which is a different and
@@ -180,8 +183,13 @@ for round in "${ROUND_LIST[@]}"; do
     opts="$(round_opts "$round")"
     [ "$opts" = "__UNDEFINED__" ] && exit 2
     printf '  %-6s %s\n' "$round" "${opts:-(JVM defaults)}"
-    verify_round_flags "$round" "${opts//\{JFR\}/}" || {
+    # The check JVMs write any {RUN} files to a scratch directory, not the output directory.
+    check_dir="$(mktemp -d)"
+    check_opts="${opts//\{JFR\}/}"
+    verify_round_flags "$round" "${check_opts//\{RUN\}/$check_dir/check}" || {
+        rm -rf "$check_dir"
         echo "aborting: round '$round' options are not accepted by every arm" >&2; exit 2; }
+    rm -rf "$check_dir"
 done
 
 for round in "${ROUND_LIST[@]}"; do
@@ -201,6 +209,7 @@ for round in "${ROUND_LIST[@]}"; do
             if [[ "$opts" == *"{JFR}"* ]]; then
                 opts="${opts//\{JFR\}/-XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording=name=prof,settings=profile,filename=$jfr,dumponexit=true,maxsize=500m}"
             fi
+            opts="${opts//\{RUN\}/$OUT/$tag}"
 
             cmd="${RUN_CMD//\{JAVA\}/$java_home/bin/java}"
             cmd="${cmd//\{OPTS\}/$opts}"

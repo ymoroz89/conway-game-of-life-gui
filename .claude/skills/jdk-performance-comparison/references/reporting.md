@@ -67,6 +67,9 @@ When a delta may be called a finding:
    flags, vendor, collector settings, driver version — before attributing a delta to any
    one of them. One project attributed a per-unit allocation difference to a single cause
    when at least four were in play.
+9. **A memory delta needs one round without the profiler** (added 2026-10-26). JFR adds
+   classes and metaspace of its own, and that alone can move a JVM across a GC trigger.
+   Confirm heap and process-memory findings in a round with GC logging, NMT or RSS instead.
 
 ## The written assessment
 
@@ -109,3 +112,9 @@ survives the pinned-heap control, say so directly in the first sentence.
 >
 > **Not attributable:** the 27 column also carries ~370 lines of engine changes and a
 > different vendor build, so no delta in it belongs to the JDK version alone.
+
+*2026-10-26: the heap verdict above was later overturned. Every round behind it recorded
+with JFR, and JFR's own classes pushed the newer JDK over its metaspace threshold; without
+JFR it committed more heap, not less. "Replicated in all three rounds" did not protect it,
+because all three ran under the same instrument. Replication under one instrument is not
+independence from it.*

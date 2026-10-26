@@ -80,6 +80,14 @@ collections a second emits its own events. The cost is invisible to a user — t
 simulation already runs over 250× faster than the display — but it is real. To record
 only when needed instead: `jcmd <pid> JFR.start duration=60s filename=rec.jfr`.
 
+*2026-10-26:* the cost differs by JDK, and it is not only throughput. In the full rerun
+([profiling log](../PROFILING-LOG.md#2026-10-26--full-rerun)), `settings=profile` cost 7% of
+throughput on JDK 21 and 13% on JDK 25. JFR also loads about 500 classes of its own, adding
+more than 2 MiB of metaspace. On JDK 25 that crossed the 21 MiB metaspace threshold and
+triggered a GC cycle that halved the committed heap: 296 against 620 MiB on JDK 21 with
+JFR, against 620 and 516 without it. A footprint measured with JFR on is not the footprint
+without it, so size containers from runs without the recorder.
+
 ## 2. Interactive use, default board
 
 ```bash

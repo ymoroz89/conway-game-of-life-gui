@@ -58,7 +58,8 @@ MARKER_END_RE='GUI-DRIVE WINDOW at-pause (.*)'
 
 # --- round options ---------------------------------------------------------------
 # Override any round, or define rounds of your own. {JFR} expands to the flight-recorder
-# options. The runner verifies every arm accepts these before measuring -- check the
+# options, {RUN} to the run's own path prefix (for per-run -Xlog files). The runner
+# verifies every arm accepts these before measuring -- check the
 # resolved VALUES too (-XX:+PrintFlagsFinal), since a silently different default is as
 # damaging as a rejected flag and much quieter.
 #
@@ -81,3 +82,11 @@ ROUND_C4="$PINNED {JFR}"
 # "How do the JDKs compare under our own tuning" is a fair question -- just a different one
 # from C1/C3, so report it separately rather than folding it in.
 ROUND_shipped='-Xms256m -Xmx1g -XX:MaxGCPauseMillis=20 {JFR}'
+
+# Memory without the profiler (added 2026-10-26). JFR's own ~500 classes once moved a JDK
+# across its metaspace GC threshold and halved its heap, so heap and process memory are
+# confirmed in a round without JFR: GC log, class-load log and an NMT summary at exit,
+# each run writing its own files through {RUN}. Sample RSS beside the runner with
+# tools/bench/sample-rss.sh. Do not read throughput from this round: logging and NMT
+# have costs of their own.
+ROUND_M='-Xlog:gc*=info:file={RUN}.gc.log:uptime,pid,level,tags -Xlog:class+load=info:file={RUN}.classes.log:uptime -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics'

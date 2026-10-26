@@ -88,7 +88,10 @@ never to attribute a percentage of runtime.
 - **Committed heap is mostly young-gen headroom.** A large committed-heap difference
   between JDKs, with an identical live set, is a GC *sizing policy* difference, not a
   memory leak or a footprint regression. Check the live set before reading anything into
-  committed heap.
+  committed heap. *2026-10-26:* it can also be a single concurrent cycle that shrank one
+  JVM's heap at Remark. Look for `G1Old` in `jdk.GarbageCollection` and read its `cause`.
+  On one project it was `Metadata GC Threshold`, crossed only because JFR's own classes
+  filled metaspace, so the difference disappeared, and then reversed, without the profiler.
 - **More collections is the price of a smaller heap.** A JDK running in half the heap
   doing roughly twice the collections and twice the promotion is behaving as designed, not
   regressing.

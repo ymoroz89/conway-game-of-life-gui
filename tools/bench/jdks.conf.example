@@ -43,8 +43,11 @@
 #   25s   release-25 jar on JDK 25    <- upgrade as shipped   (21 vs 25s)
 #
 # Stage arms 21 and 25 with a byte-identical jar and verify with shasum, or their delta
-# is not the runtime alone. (Builds are not byte-reproducible -- pom.xml sets no
-# outputTimestamp -- so build the release-21 jar ONCE and copy that one file to both.)
+# is not the runtime alone. Build the release-21 jar ONCE and copy that one file to both.
+# (Corrected 2026-10-26: builds ARE byte-reproducible. Maven resolves a fixed
+# project.build.outputTimestamp, so rebuilding a tag gives the same jar: java-21 gave
+# 00caae1f... on 2026-10-10, 2026-10-25 and twice on 2026-10-26, and java-25 gave
+# 7e9eb5e8... twice on 2026-10-26. Copying one file is still the simplest guarantee.)
 21   openjdk64-21.0.11   java-21
 25   openjdk64-25.0.3    java-21
 25s  openjdk64-25.0.3    java-25

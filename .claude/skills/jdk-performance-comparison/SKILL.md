@@ -41,7 +41,13 @@ protocol below exists to close each one:
 - **GC ergonomics masquerade as runtime differences.** JDKs size the heap very
   differently out of the box — 620 / 300 / 262 MiB committed for the same workload across
   three releases. A default-heap throughput number bundles codegen with GC policy and
-  cannot attribute either.
+  cannot attribute either. *2026-10-26: those three figures were measured with JFR
+  recording; see the next point.*
+- **The profiler can change what it measures.** *Added 2026-10-26.* JFR loads ~500 classes
+  of its own. On one project that pushed the newer JDK's metaspace over its 21 MiB
+  `MetaspaceSize` threshold, and the concurrent cycle that followed shrank its heap at
+  Remark: 296 against 620 MiB committed with JFR, 620 against 516 without it, and an 18%
+  larger process. Every memory conclusion needs a round without the profiler.
 
 ## Step 1 — discovery
 
@@ -176,19 +182,24 @@ hours. That conversation is the single most valuable thing this step produces.
 
 **Run two rounds by default.** The others are follow-ups, each triggered by a specific
 result, and running them unconditionally doubles the machine time to answer questions
-nobody asked.
+nobody asked. *2026-10-26: three when memory is part of the question; add M.*
 
 | | Round | Condition | What only this round can tell you | Run it |
 |---|---|---|---|---|
 | **Core** | **C1** | Default heap, no JFR | Throughput, uncontaminated by profiling overhead | always |
 | **Core** | **C3** | Default heap + JFR `settings=profile` | Heap, GC, allocation, pauses as each JDK sizes itself | always |
+| **Core** *(added 2026-10-26)* | **M** | Default heap, no JFR; GC log, class-load log and NMT through `{RUN}`, RSS sampled beside the run | Heap, collections, classes and process memory without the profiler | whenever memory is part of the question |
 | Follow-up | **C2** | Pinned heap, no JFR | Whether a C1 throughput delta is codegen or GC ergonomics | only if C1 shows a delta |
 | Follow-up | **C4** | Pinned heap + JFR | Whether a C3 pause delta is the collector or just a smaller eden | only if C3 shows a pause delta worth attributing |
 | Optional | **C5** | Parallelism sweep | Where an effect lives: compute versus dispatch | only with a concurrency knob and a delta to locate |
 
 Two rounds is not a shortcut; it is the minimum that answers the question. C1 gives the
-throughput number and C3 gives everything else, because JFR is required for the memory
-rows and distorts the throughput row. That split is forced by the tooling, not chosen.
+throughput number and C3 gives everything else, ~~because JFR is required for the memory
+rows and distorts the throughput row. That split is forced by the tooling, not chosen.~~
+because JFR distorts the throughput row. *Corrected 2026-10-26:* JFR is not required for
+the memory rows. GC logging gives heap and collections, `-Xlog:class+load` the classes, NMT
+the process by category, and sampling `ps` the RSS (`tools/bench/sample-rss.sh` here). JFR
+can also change those rows, which is what round M checks.
 
 **Why the follow-ups are conditional.** They are *attribution* rounds: they explain a
 difference, so with no difference to explain they return nothing. They also have to be
@@ -288,6 +299,13 @@ settled at 620 MiB and 300 MiB committed — one growing above its initial heap,
 shrinking below it. Without the flag dump that reads as "they changed the defaults", which
 would have been wrong.
 
+*Corrected 2026-10-26:* that example was not a sizing-policy change either. It was measured
+with JFR, and JFR's own classes pushed the newer JDK's metaspace over `MetaspaceSize`. The
+concurrent cycle that followed shrank its heap at Remark, and without JFR the order
+reversed. Identical flags rule out changed defaults, but not a trigger that the measurement
+itself pulls. Before calling a heap difference adaptive behavior, check `G1Old` cycles and
+their `cause` in `jdk.GarbageCollection`, and compare with round M.
+
 ## Step 4 — run the matrix
 
 Use the bundled runner. It owns everything that is the same in every project and easy to
@@ -309,7 +327,9 @@ It reads two project files, which are the only things you write per project:
 `RUN_CMD` takes `{JAVA}`, `{OPTS}`, `{UNITS}` and `{WORKTREE}` placeholders — use
 `{WORKTREE}` to run the artifact built from the arm's own ref; `BUILD_CMD` takes
 `{WORKTREE}`. Rounds may be overridden or invented with `ROUND_<name>`, using `{JFR}`
-where the recorder options belong.
+where the recorder options belong and `{RUN}` for the run's own path prefix — e.g.
+`-Xlog:gc*=info:file={RUN}.gc.log:uptime,level,tags` — so per-run files sit next to its
+console log.
 
 What it does per arm, and why each step is there rather than left to the operator:
 
@@ -403,7 +423,9 @@ must not be quoted as a JDK difference — in that example the profiled round sh
 older JDK 3% ahead purely because JFR cost the newer one more. Report throughput from the
 JFR-free round and use the profiled round for memory, GC and allocation, which is what it
 is for. Note also that this per-JDK cost can invert between projects and releases, so
-carry the measured numbers rather than a remembered direction.
+carry the measured numbers rather than a remembered direction. *2026-10-26:* confirm any
+memory conclusion from the profiled round in round M. JFR's cost is not only throughput;
+its class loading can move the heap.
 
 ## Step 6 — compare, and Step 7 — report
 

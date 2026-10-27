@@ -245,7 +245,17 @@ From Thomas Schatzl's per-release G1 change posts and the OpenJDK bug tracker:
 - **JDK 26:** [JDK-8238687](https://bugs.openjdk.org/browse/JDK-8238687), "Investigate memory
   uncommit during young collections in G1" (fix version 26, resolved 2025-07-08), adds resizing
   during young collections. Its description records the behavior until then: G1 uncommits
-  memory in the Remark pause only.
+  memory in the Remark pause only. **2026-10-27, from the change itself** (commit `4761479`,
+  integrated 2025-07-09, [review](https://github.com/openjdk/jdk/pull/25832)):
+  - G1 resizes the heap at the end of any collection, young ones included, from short- and
+    long-term GC-time ratios against `GCTimeRatio`.
+  - It removes the free-ratio resizing at Remark
+    ([JDK-8248324](https://bugs.openjdk.org/browse/JDK-8248324)), keeping it only after full
+    GCs and periodic GCs.
+  - It raises the default `GCTimeRatio` from 12 to 24.
+
+  Both the Remark shrink and the growth threshold this log explains therefore work
+  differently on JDK 26. Not measured here.
 
 ### What the recordings show
 

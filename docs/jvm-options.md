@@ -40,7 +40,11 @@ Where something has **not** been measured, it says so.
 - [ ] No expired flags copied from an old guide. Six common ones
       [stop the JVM outright](#flags-that-stop-the-jvm-from-starting).
 - [ ] `-XX:MaxRAMFraction` is replaced by `-XX:MaxRAMPercentage`. The former still starts
-      on JDK 21 with a warning, and **fails** on JDK 25.
+      on JDK 21 with a warning, and **fails** on JDK 25. *Re-checked 2026-10-27 with
+      `-XX:MaxRAMFraction=4 -version`:* Homebrew OpenJDK 21.0.12.1 prints "Option
+      MaxRAMFraction was deprecated in version 10.0" and starts. 25.0.4.1 prints
+      "Unrecognized VM option 'MaxRAMFraction=4'" and "Could not create the Java Virtual
+      Machine".
 - [ ] If JFR runs continuously, it uses `settings=default`, and its measured ~6%
       throughput cost is acceptable.
 
